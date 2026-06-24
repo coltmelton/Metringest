@@ -1,0 +1,54 @@
+{
+  "title": "Telemetry Pipeline",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Events Ingested",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "sum(rate(events_ingested_total[1m]))", "legendFormat": "events/s" }]
+    },
+    {
+      "type": "stat",
+      "title": "Events Processed",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "sum(rate(events_processed_total[1m]))", "legendFormat": "events/s" }]
+    },
+    {
+      "type": "stat",
+      "title": "Dead Letters",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "sum(dead_letter_count_total)", "legendFormat": "dead letters" }]
+    },
+    {
+      "type": "stat",
+      "title": "Queue Lag",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "expr": "max(queue_lag)", "legendFormat": "messages" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Processing Latency p95",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(processing_latency_ms_bucket[5m])) by (le))",
+          "legendFormat": "p95 ms"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "API Latency p95",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(api_request_latency_ms_bucket[5m])) by (le))",
+          "legendFormat": "p95 ms"
+        }
+      ]
+    }
+  ]
+}
