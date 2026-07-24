@@ -30,6 +30,9 @@ Unit tests, full-pipeline integration tests, a worker failure/recovery scenario,
 ingestion benchmark are documented in [docs/reliability.md](docs/reliability.md). GitHub Actions
 runs all of them on every branch and pull request.
 
+The dated commands, results, failures, investigation, and fixes are recorded in
+[docs/records.md](docs/records.md).
+
 ## Original TelemetryUI documentation
 
 <div align="center">
