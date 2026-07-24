@@ -191,3 +191,130 @@ official release line runs on Node.js 24.
 
 Avoid describing the local benchmark as production throughput or the exercised recovery scenario
 as proof against every possible failure mode.
+
+## Portfolio evidence snapshot — July 24, 2026
+
+This section aggregates a fresh run performed from the project virtual environment on the local
+Mac and Docker Compose stack. The raw benchmark JSON was written to
+`benchmark-results/portfolio-run.json`.
+
+### Environment observed
+
+```text
+Python: 3.12.13
+Metringest: 0.1.0
+Pytest: 8.4.2
+Ruff: 0.16.0
+API: ready
+Kafka: healthy
+PostgreSQL: healthy
+Redis: healthy
+Worker: running
+```
+
+### Quality checks observed
+
+```text
+Ruff: All checks passed
+Unit tests: 4 passed, 2 integration tests deselected, 0.22 seconds
+Integration tests: 2 passed, 4 unit tests deselected, 11.01 seconds
+```
+
+The integration output visibly recorded `docker compose stop worker` followed by
+`docker compose start worker`. After restart, the recovery assertion passed.
+
+### Fresh benchmark observed
+
+Command:
+
+```sh
+python scripts/benchmark_ingest.py \
+  --count 1000 \
+  --concurrency 25 \
+  --output benchmark-results/portfolio-run.json
+```
+
+Result:
+
+| Measurement | Observed value |
+| --- | ---: |
+| Requests | 1,000 |
+| Accepted | 1,000 |
+| Persisted | 1,000 |
+| Failures | 0 |
+| Ingestion time | 3.059 seconds |
+| End-to-end pipeline time | 3.068 seconds |
+| Ingestion throughput | 326.9 requests/second |
+| Persisted pipeline throughput | 325.9 events/second |
+| Mean producer latency | 73.69 ms |
+| p50 producer latency | 53.87 ms |
+| p95 producer latency | 193.51 ms |
+| p99 producer latency | 283.71 ms |
+
+These are local development results from one run. The earlier controlled before/after run remains
+the evidence for the 14.9% batching improvement because its two measurements used the same test
+conditions.
+
+### Remote CI observed
+
+Both workflows on commit `c978ab9` completed successfully:
+
+| Workflow | Run | Result |
+| --- | --- | --- |
+| Metringest CI | `30118817092` | Success |
+| Original repository CI | `30118817369` | Success |
+
+The Metringest CI run independently executed installation, linting, unit tests, Compose startup,
+integration and recovery tests, a benchmark smoke run, log capture, and artifact upload.
+
+## Ready-to-use portfolio copy
+
+### Project title
+
+**Metringest — Resilient telemetry ingestion with measured failure recovery**
+
+### Project summary
+
+Metringest is a containerized telemetry pipeline that validates events through FastAPI, buffers
+accepted work in Kafka, processes events asynchronously, stores durable history in PostgreSQL,
+and serves recent values from Redis. Its test suite exercises the full running stack, including a
+failure scenario that stops the worker, accepts events while processing is unavailable, restarts
+the consumer, and verifies every event ID after recovery.
+
+### Impact bullets
+
+- Built an asynchronous FastAPI and Kafka ingestion pipeline backed by PostgreSQL and Redis, with
+  Docker Compose providing a reproducible five-service development environment.
+- Demonstrated worker failure recovery by accepting three events while the consumer was stopped,
+  restarting it, and verifying all three exact IDs plus PostgreSQL aggregates.
+- Improved persisted pipeline throughput by 14.9% in a controlled local comparison by batching up
+  to 100 events into single PostgreSQL and Redis storage round trips.
+- Recorded a separate 1,000-event portfolio run at 325.9 persisted events/second with zero failed
+  or missing events and p50/p95/p99 producer latency reporting.
+- Implemented GitHub Actions CI covering reproducible package installation, linting, unit tests,
+  full-stack integration, failure recovery, benchmark smoke testing, logs, and evidence artifacts.
+- Diagnosed a shared CI failure by recreating the clean Python 3.12 editable install, tracing
+  ambiguous setuptools discovery, and constraining packaging to the intended `app` package.
+
+### Technology list
+
+Python 3.12, FastAPI, Pydantic, Apache Kafka, PostgreSQL, Redis, asyncpg, aiokafka, Docker Compose,
+Pytest, Ruff, GitHub Actions.
+
+### What the evidence proves
+
+- The checked event schema accepts valid metrics and rejects malformed names and naive timestamps.
+- The batch function uses one PostgreSQL call and one Redis pipeline for a non-empty batch.
+- A real event can traverse the running API, Kafka, worker, PostgreSQL, and Redis services.
+- Kafka can retain events during the tested worker outage and deliver them after the worker
+  restarts.
+- The tested 1,000-event local run completed with no rejected, failed, or unpersisted events.
+- Both GitHub workflows passed on the recorded branch commit.
+
+### Boundaries to state honestly
+
+- Benchmarks represent the local Docker environment, not production capacity.
+- The integration test demonstrates recovery from a stopped worker, not every infrastructure or
+  network failure.
+- Kafka delivery is at least once; PostgreSQL event IDs make durable insertion idempotent.
+- Redis is a recent-value cache and is not the durable source of record.
