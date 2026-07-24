@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ app_name }} API</title><link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}"><link rel="stylesheet" href="{{ url_for('static', path='/pages.css') }}"></head><body>
+<header class="topbar"><div class="brand">Metringest <span>Operations</span></div><nav><a href="/">Dashboard</a><a class="active" href="/api">API</a><a href="/health">Health</a></nav></header>
+<main class="content-page"><div class="page-head"><div><h1>API reference</h1><p>JSON over HTTP · version 1</p></div><a class="button-link" href="/docs">Open interactive OpenAPI docs</a></div>
+<section class="panel intro"><h2>Ingest a metric</h2><p>Submit a validated event. Accepted events are written to Kafka and return HTTP 202.</p><pre>curl -X POST http://localhost:8001/v1/metrics \
+  -H 'content-type: application/json' \
+  -d '{"name":"checkout.duration","value":184.2,"source":"storefront"}'</pre></section>
+<section class="panel endpoint-list"><h2>Endpoints</h2><table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody>
+<tr><td><b class="method post">POST</b></td><td><code>/v1/metrics</code></td><td>Validate and enqueue a metric event</td></tr><tr><td><b class="method">GET</b></td><td><code>/v1/metrics</code></td><td>List metric aggregates</td></tr><tr><td><b class="method">GET</b></td><td><code>/v1/metrics/{name}/recent</code></td><td>Read recent cached events</td></tr><tr><td><b class="method">GET</b></td><td><code>/v1/dashboard</code></td><td>Dashboard totals and time series</td></tr><tr><td><b class="method">GET</b></td><td><code>/v1/analytics</code></td><td>Bounded exploratory event data</td></tr><tr><td><b class="method">GET</b></td><td><code>/health</code></td><td>Service readiness</td></tr>
+</tbody></table></section></main></body></html>

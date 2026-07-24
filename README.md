@@ -1,3 +1,31 @@
+# Metringest
+
+Metringest is a containerized metric ingestion pipeline with an operations dashboard. Producers send JSON events to FastAPI; Pydantic validates them; Kafka buffers them; Python workers enrich and persist them; PostgreSQL stores history and aggregates; and Redis serves recent values quickly.
+
+## Run locally
+
+```sh
+docker compose up --build
+```
+
+Open [http://localhost:8001](http://localhost:8001) for the workflow dashboard or [http://localhost:8001/docs](http://localhost:8001/docs) for the interactive ingestion API. Set `API_PORT` if you prefer another host port; the container continues to listen on port 8000 internally.
+
+```sh
+curl -X POST http://localhost:8001/v1/metrics \
+  -H 'content-type: application/json' \
+  -d '{"name":"checkout.duration","value":184.2,"source":"storefront","tags":{"region":"us-east-1"}}'
+```
+
+The original TelemetryUI source remains in `lib/` as the dashboard’s UI foundation and reference implementation.
+
+Generate a repeatable local dataset with traffic cycles, multiple producers and regions, bursts, and occasional anomalies:
+
+```sh
+docker compose --profile simulation run --rm simulator
+```
+
+## Original TelemetryUI documentation
+
 <div align="center">
   <img src="https://user-images.githubusercontent.com/464900/183483800-f313a3c0-1877-4c37-ac07-e08bed3f2276.png" width="500" />
   <br /><br />
