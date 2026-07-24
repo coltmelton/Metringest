@@ -142,7 +142,8 @@ installation saw the original Elixir directories and the Python application as m
 top-level packages and stopped safely.
 
 Fix: `pyproject.toml` now explicitly builds only packages matching `app*`. The CI workflow also
-uses `actions/checkout@v5`, `actions/setup-python@v6`, and `actions/upload-artifact@v5`.
+uses `actions/checkout@v5`, `actions/setup-python@v6`, and the Node.js 24-based
+`actions/upload-artifact@v7`.
 
 ### Post-fix local CI simulation
 
@@ -163,6 +164,21 @@ The benchmark smoke run completed in 0.338 seconds at 295.8 end-to-end events/se
 smoke-sized result confirms completion and artifact generation; it is not used as a capacity
 claim. Logs were captured before the isolated verification project and only its test volumes were
 removed.
+
+### Remote verification
+
+GitHub Actions reran the repaired workflow as run `30118565372` on commit `a18f595`.
+
+```text
+Workflow status: Success
+Unit job: Success, 25 seconds
+Integration job: Success, 1 minute 31 seconds
+Evidence artifact: metringest-integration-evidence, 14.3 KB
+```
+
+The successful run still reported a non-failing Node.js 20 warning from
+`actions/upload-artifact@v5`. The workflow was subsequently moved to `upload-artifact@v7`, whose
+official release line runs on Node.js 24.
 
 ## Portfolio-safe statements supported by this record
 
