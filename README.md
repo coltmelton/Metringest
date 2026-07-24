@@ -24,6 +24,12 @@ Generate a repeatable local dataset with traffic cycles, multiple producers and 
 docker compose --profile simulation run --rm simulator
 ```
 
+## Verification
+
+Unit tests, full-pipeline integration tests, a worker failure/recovery scenario, and an HTTP
+ingestion benchmark are documented in [docs/reliability.md](docs/reliability.md). GitHub Actions
+runs all of them on every branch and pull request.
+
 ## Original TelemetryUI documentation
 
 <div align="center">

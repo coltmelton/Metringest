@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -11,7 +11,9 @@ class MetricEvent(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     name: MetricName
     value: float
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)  # noqa: UP017 - Python 3.9 tooling
+    )
     source: str = Field(min_length=1, max_length=80)
     tags: dict[str, str] = Field(default_factory=dict)
 
@@ -37,4 +39,3 @@ class MetricSummary(BaseModel):
     maximum: float
     last_value: float
     updated_at: datetime
-
