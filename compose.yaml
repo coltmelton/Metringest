@@ -17,6 +17,8 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-100}
+      WORKER_BATCH_WAIT_MS: ${WORKER_BATCH_WAIT_MS:-250}
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql://metringest:metringest@postgres:5432/metringest
     depends_on:
