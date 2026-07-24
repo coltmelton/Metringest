@@ -69,3 +69,12 @@ Change `simulator` environment variables in `docker-compose.yml`:
 docker compose down -v
 docker compose up --build
 ```
+
+## Reliability verification
+
+The clean reliability suite covers poison-message isolation and DLQ routing, mid-batch failure,
+PostgreSQL and Redis outages, worker restart recovery, three Kafka partitions, two-worker scaling,
+and repeated benchmark matrices.
+
+See [docs/reliability.md](docs/reliability.md) for the consistency boundary and commands, and
+[docs/records.md](docs/records.md) for branch provenance and recorded results.
