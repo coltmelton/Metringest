@@ -1,8 +1,9 @@
+from time import perf_counter
+
 from prometheus_client import Counter, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-from time import perf_counter
 
 events_ingested_total = Counter("events_ingested_total", "Accepted telemetry events")
 events_failed_total = Counter("events_failed_total", "Rejected telemetry events")
