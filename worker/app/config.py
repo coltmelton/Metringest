@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     dead_letter_topic: str = "dead-letter-telemetry"
     consumer_group: str = "telemetry-worker"
     database_url: str = "postgresql://telemetry:telemetry@postgres:5432/telemetry"
+    redis_url: str = "redis://redis:6379/0"
+    batch_size: int = 100
+    batch_wait_ms: int = 250
     metrics_port: int = 9101
     service_name: str = "telemetry-worker"
 

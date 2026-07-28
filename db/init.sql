@@ -35,7 +35,20 @@ CREATE TABLE IF NOT EXISTS device_status (
 
 CREATE TABLE IF NOT EXISTS pipeline_errors (
   id BIGSERIAL PRIMARY KEY,
+  source_topic TEXT NOT NULL,
+  source_partition INTEGER NOT NULL,
+  source_offset BIGINT NOT NULL,
   payload JSONB NOT NULL,
   reason TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ,
+  UNIQUE(source_topic, source_partition, source_offset)
 );
+
+ALTER TABLE pipeline_errors ADD COLUMN IF NOT EXISTS source_topic TEXT;
+ALTER TABLE pipeline_errors ADD COLUMN IF NOT EXISTS source_partition INTEGER;
+ALTER TABLE pipeline_errors ADD COLUMN IF NOT EXISTS source_offset BIGINT;
+ALTER TABLE pipeline_errors ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS pipeline_errors_source_idx
+  ON pipeline_errors(source_topic, source_partition, source_offset)
+  WHERE source_topic IS NOT NULL;

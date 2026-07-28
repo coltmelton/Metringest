@@ -1,5 +1,5 @@
-import json
 import asyncio
+import json
 import logging
 from datetime import datetime
 
@@ -42,7 +42,11 @@ async def disconnect() -> None:
         await producer.stop()
 
 
-async def publish(event: dict) -> None:
+async def publish(event: dict, key: str | None = None) -> None:
     if producer is None:
         raise RuntimeError("kafka producer is not initialized")
-    await producer.send_and_wait(settings.raw_topic, event)
+    await producer.send_and_wait(
+        settings.raw_topic,
+        event,
+        key=key.encode("utf-8") if key else None,
+    )

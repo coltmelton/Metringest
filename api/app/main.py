@@ -1,11 +1,12 @@
-from datetime import datetime, timezone
+import json
 import logging
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from app import db, kafka
+from app import cache, db, kafka
 from app.config import settings
 from app.logging_config import configure_logging
 from app.metrics import (
@@ -33,6 +34,7 @@ app.add_middleware(MetricsMiddleware)
 @app.on_event("startup")
 async def startup() -> None:
     await db.connect()
+    await cache.connect()
     await kafka.connect()
     logger.info("api started", extra={"service": settings.service_name})
 
@@ -40,12 +42,24 @@ async def startup() -> None:
 @app.on_event("shutdown")
 async def shutdown() -> None:
     await kafka.disconnect()
+    await cache.disconnect()
     await db.disconnect()
 
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": settings.service_name}
+    postgres_ok = bool(await db.get_pool().fetchval("SELECT true"))
+    redis_ok = bool(await cache.get_client().ping())
+    kafka_ok = kafka.producer is not None and bool(kafka.producer.client.cluster.brokers())
+    return {
+        "status": "ready" if postgres_ok and redis_ok and kafka_ok else "degraded",
+        "service": settings.service_name,
+        "dependencies": {
+            "postgres": postgres_ok,
+            "redis": redis_ok,
+            "kafka": kafka_ok,
+        },
+    }
 
 
 @app.get("/metrics")
@@ -56,9 +70,9 @@ async def metrics():
 @app.post("/telemetry", status_code=202)
 async def ingest(event: TelemetryIn) -> dict:
     envelope = TelemetryEnvelope(
-        event=event, received_at=datetime.now(timezone.utc)
+        event=event, received_at=datetime.now(UTC)
     ).model_dump(mode="json")
-    await kafka.publish(envelope)
+    await kafka.publish(envelope, key=event.device_id)
     events_ingested_total.inc()
     return {"accepted": True, "event_id": event.event_id}
 
@@ -71,9 +85,9 @@ async def ingest_batch(events: list[dict]) -> BatchResponse:
         try:
             event = TelemetryIn.model_validate(payload)
             envelope = TelemetryEnvelope(
-                event=event, received_at=datetime.now(timezone.utc)
+                event=event, received_at=datetime.now(UTC)
             ).model_dump(mode="json")
-            await kafka.publish(envelope)
+            await kafka.publish(envelope, key=event.device_id)
             accepted += 1
             events_ingested_total.inc()
         except ValidationError as exc:
@@ -140,6 +154,25 @@ async def latest(device_id: str) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="device telemetry not found")
     return dict(row)
+
+
+@app.get("/devices/{device_id}/recent")
+async def recent(device_id: str) -> dict:
+    values = await cache.get_client().lrange(f"telemetry:{device_id}:recent", 0, 49)
+    return {"device_id": device_id, "events": [json.loads(value) for value in values]}
+
+
+@app.get("/pipeline/stats")
+async def pipeline_stats(device_prefix: str | None = None) -> dict:
+    if device_prefix:
+        event_count = await db.get_pool().fetchval(
+            "SELECT count(*) FROM telemetry_events WHERE device_id LIKE $1",
+            f"{device_prefix}%",
+        )
+    else:
+        event_count = await db.get_pool().fetchval("SELECT count(*) FROM telemetry_events")
+    dlq_count = await db.get_pool().fetchval("SELECT count(*) FROM pipeline_errors")
+    return {"event_count": event_count, "dlq_count": dlq_count}
 
 
 @app.get("/regions/{region}/summary")
