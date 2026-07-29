@@ -8,6 +8,8 @@ It does not include TelemetryUI/Elixir commits, workflows, or claims from the su
 - Base: `metringest/main`
 - Base commit: `a43ed66` (`Build telemetry pipeline MVP`)
 - Reliability branch: `feat/reliability-v2`
+- Reliability merge: `b30e2eb` (pull request #1)
+- Transactional-outbox branch: `feat/transactional-outbox`
 - CI target branch: `main`
 
 ## Implemented verification
@@ -76,3 +78,42 @@ Every one of the 12 runs accepted and persisted all 500 events with zero failure
 The best median in this local matrix occurred at concurrency 25. Concurrency 50 reduced
 throughput and increased tail latency, indicating saturation in this single-host Compose setup.
 These values are local development evidence, not production capacity claims.
+
+## Transactional outbox verification — July 29, 2026
+
+The follow-up closes the crash window between committing a telemetry row and publishing its
+derived Kafka event. The telemetry row, device-status update, and unique outbox row now commit in
+one PostgreSQL transaction. Multiple dispatchers claim pending records using
+`FOR UPDATE SKIP LOCKED` and mark them published only after Kafka acknowledgement.
+
+Final verification:
+
+```text
+Ruff: All checks passed
+Unit tests: 8 passed, 7 integration tests deselected
+Integration tests: 7 passed, 8 unit tests deselected, 51.37 seconds
+Outbox after integration and benchmarks: 0 pending, 1,813 published
+Existing-volume migration: applied twice safely with no data reset
+```
+
+The new integration scenario reset six durable rows to pending, restarted the worker at two
+instances, consumed the resulting validated events, and proved that all six distinct event IDs
+were delivered once and all six database markers completed. Unit tests separately simulate:
+
+- Kafka failure before acknowledgement, leaving the row pending.
+- Kafka acknowledgement followed by a crash before the PostgreSQL marker commit, causing a safe
+  at-least-once replay with the same event ID.
+- Marker updates occurring only after the producer call succeeds.
+
+The post-change benchmark used 300 events, two repeated runs, and concurrency levels 1, 10, and
+25. All 1,800 events were accepted and persisted with zero request failures.
+
+| Concurrency | Runs | Median persisted events/s | Minimum | Maximum |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 2 | 311.1 | 307.1 | 315.0 |
+| 10 | 2 | 402.4 | 393.1 | 411.6 |
+| 25 | 2 | 331.6 | 267.1 | 396.2 |
+
+The matrix demonstrates that adding durable outbox insertion did not prevent complete
+processing under concurrent load. It remains single-host development evidence rather than a
+production capacity claim.

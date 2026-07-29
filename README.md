@@ -6,7 +6,8 @@ Production-style MVP for ingesting, validating, queueing, processing, storing, a
 
 - FastAPI ingestion and query API
 - Kafka topics: `raw-telemetry`, `validated-telemetry`, `dead-letter-telemetry`
-- Python stream worker with deduplication, derived fields, dead-letter routing, and metrics
+- Python stream worker with deduplication, transactional outbox delivery, dead-letter routing,
+  and metrics
 - PostgreSQL time-series-style storage
 - React/Vite dashboard
 - Prometheus and Grafana observability
