@@ -58,6 +58,24 @@ services:
       timeout: 5s
       retries: 20
 
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: telemetry
+    volumes:
+      - ./db/migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for migration in /migrations/*.sql; do
+          echo "applying $$migration"
+          psql --host postgres --username telemetry --dbname telemetry \
+            --set ON_ERROR_STOP=1 --file "$$migration"
+        done
+
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -75,8 +93,8 @@ services:
       DATABASE_URL: postgresql://telemetry:telemetry@postgres:5432/telemetry
       REDIS_URL: redis://redis:6379/0
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
       redis:
@@ -93,9 +111,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       BATCH_SIZE: ${WORKER_BATCH_SIZE:-100}
       BATCH_WAIT_MS: ${WORKER_BATCH_WAIT_MS:-250}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
+      OUTBOX_POLL_MS: ${OUTBOX_POLL_MS:-250}
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
       redis:

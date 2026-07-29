@@ -172,7 +172,18 @@ async def pipeline_stats(device_prefix: str | None = None) -> dict:
     else:
         event_count = await db.get_pool().fetchval("SELECT count(*) FROM telemetry_events")
     dlq_count = await db.get_pool().fetchval("SELECT count(*) FROM pipeline_errors")
-    return {"event_count": event_count, "dlq_count": dlq_count}
+    outbox_pending_count = await db.get_pool().fetchval(
+        "SELECT count(*) FROM event_outbox WHERE published_at IS NULL"
+    )
+    outbox_published_count = await db.get_pool().fetchval(
+        "SELECT count(*) FROM event_outbox WHERE published_at IS NOT NULL"
+    )
+    return {
+        "event_count": event_count,
+        "dlq_count": dlq_count,
+        "outbox_pending_count": outbox_pending_count,
+        "outbox_published_count": outbox_published_count,
+    }
 
 
 @app.get("/regions/{region}/summary")
