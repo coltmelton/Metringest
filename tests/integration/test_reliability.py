@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import subprocess
 from datetime import UTC, datetime
@@ -6,7 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from aiokafka import AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
 pytestmark = pytest.mark.integration
 
@@ -48,6 +49,32 @@ async def wait_for(client, path, predicate, timeout=60):
             pass
         await asyncio.sleep(0.5)
     pytest.fail(f"timed out waiting for {path}: {last.text if last else 'no response'}")
+
+
+def postgres_scalar(query: str) -> str:
+    return compose(
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "-U",
+        "telemetry",
+        "-d",
+        "telemetry",
+        "-Atc",
+        query,
+    ).stdout.strip()
+
+
+async def wait_for_postgres(query: str, expected: str, timeout=60) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    last = None
+    while asyncio.get_running_loop().time() < deadline:
+        last = postgres_scalar(query)
+        if last == expected:
+            return
+        await asyncio.sleep(0.5)
+    pytest.fail(f"timed out waiting for PostgreSQL value {expected!r}; got {last!r}")
 
 
 @pytest.mark.asyncio
@@ -145,6 +172,74 @@ async def test_redis_outage_replays_durable_row_and_repairs_cache():
             timeout=90,
         )
         assert len([item for item in recent["events"] if item["event_id"] == event["event_id"]]) == 1
+
+
+@pytest.mark.asyncio
+async def test_pending_outbox_survives_restart_and_two_dispatchers_publish_each_row_once():
+    prefix = f"integration-outbox-{uuid4().hex}"
+    events = [payload(f"{prefix}-{index}") for index in range(6)]
+    event_ids = {event["event_id"] for event in events}
+    quoted_ids = ", ".join(f"'{event_id}'" for event_id in event_ids)
+
+    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+        for event in events:
+            response = await client.post("/telemetry", json=event)
+            assert response.status_code == 202
+        await wait_for_postgres(
+            f"""
+            SELECT count(*) FROM event_outbox
+            WHERE event_id IN ({quoted_ids}) AND published_at IS NOT NULL
+            """,
+            str(len(events)),
+        )
+
+    compose("stop", "worker")
+    consumer = AIOKafkaConsumer(
+        "validated-telemetry",
+        bootstrap_servers=KAFKA_URL,
+        group_id=f"outbox-verification-{uuid4().hex}",
+        auto_offset_reset="latest",
+        enable_auto_commit=False,
+        value_deserializer=lambda value: json.loads(value.decode()),
+    )
+    await consumer.start()
+    try:
+        updated = postgres_scalar(
+            f"""
+            WITH updated AS (
+              UPDATE event_outbox SET published_at = NULL
+              WHERE event_id IN ({quoted_ids})
+              RETURNING 1
+            )
+            SELECT count(*) FROM updated
+            """
+        )
+        assert updated == str(len(events))
+
+        compose("up", "--detach", "--scale", "worker=2", "worker")
+        received = []
+        deadline = asyncio.get_running_loop().time() + 90
+        while len(received) < len(events) and asyncio.get_running_loop().time() < deadline:
+            batch = await consumer.getmany(timeout_ms=1000)
+            received.extend(
+                message.value["event_id"]
+                for messages in batch.values()
+                for message in messages
+                if message.value.get("event_id") in event_ids
+            )
+
+        assert set(received) == event_ids
+        assert len(received) == len(event_ids)
+        await wait_for_postgres(
+            f"""
+            SELECT count(*) FROM event_outbox
+            WHERE event_id IN ({quoted_ids}) AND published_at IS NULL
+            """,
+            "0",
+        )
+    finally:
+        await consumer.stop()
+        compose("up", "--detach", "--scale", "worker=1", "worker")
 
 
 def test_topics_have_multiple_partitions_and_workers_scale():
