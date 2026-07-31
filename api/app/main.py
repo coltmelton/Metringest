@@ -1,16 +1,26 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Query
+from aiokafka.errors import KafkaError
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
 from app import cache, db, kafka
+from app.admission import (
+    ClientIdentity,
+    RequestSizeLimitMiddleware,
+    authenticate_client,
+    charge_rate_limit,
+)
 from app.config import settings
 from app.logging_config import configure_logging
 from app.metrics import (
     MetricsMiddleware,
+    admission_rejected_total,
     events_failed_total,
     events_ingested_total,
     metrics_response,
@@ -20,7 +30,23 @@ from app.models import BatchResponse, TelemetryEnvelope, TelemetryIn, TelemetryR
 configure_logging(settings.service_name)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Distributed Telemetry Pipeline", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await db.connect()
+    await cache.connect()
+    await kafka.connect()
+    logger.info("api started", extra={"service": settings.service_name})
+    try:
+        yield
+    finally:
+        await kafka.disconnect()
+        await cache.disconnect()
+        await db.disconnect()
+
+
+app = FastAPI(title="Distributed Telemetry Pipeline", version="1.0.0", lifespan=lifespan)
+app.add_middleware(RequestSizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -29,21 +55,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(MetricsMiddleware)
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    await db.connect()
-    await cache.connect()
-    await kafka.connect()
-    logger.info("api started", extra={"service": settings.service_name})
-
-
-@app.on_event("shutdown")
-async def shutdown() -> None:
-    await kafka.disconnect()
-    await cache.disconnect()
-    await db.disconnect()
 
 
 @app.get("/health")
@@ -68,17 +79,33 @@ async def metrics():
 
 
 @app.post("/telemetry", status_code=202)
-async def ingest(event: TelemetryIn) -> dict:
+async def ingest(
+    event: TelemetryIn,
+    response: Response,
+    identity: Annotated[ClientIdentity, Depends(authenticate_client)],
+) -> dict:
+    await charge_rate_limit(identity, 1, response)
     envelope = TelemetryEnvelope(
         event=event, received_at=datetime.now(UTC)
     ).model_dump(mode="json")
-    await kafka.publish(envelope, key=event.device_id)
+    await publish_or_reject(envelope, event.device_id)
     events_ingested_total.inc()
     return {"accepted": True, "event_id": event.event_id}
 
 
 @app.post("/telemetry/batch", response_model=BatchResponse, status_code=202)
-async def ingest_batch(events: list[dict]) -> BatchResponse:
+async def ingest_batch(
+    events: list[dict],
+    response: Response,
+    identity: Annotated[ClientIdentity, Depends(authenticate_client)],
+) -> BatchResponse:
+    if len(events) > settings.max_batch_events:
+        admission_rejected_total.labels(reason="batch_too_large").inc()
+        raise HTTPException(
+            status_code=413,
+            detail=f"batch exceeds {settings.max_batch_events} events",
+        )
+    await charge_rate_limit(identity, len(events), response)
     accepted = 0
     errors: list[dict] = []
     for index, payload in enumerate(events):
@@ -87,13 +114,26 @@ async def ingest_batch(events: list[dict]) -> BatchResponse:
             envelope = TelemetryEnvelope(
                 event=event, received_at=datetime.now(UTC)
             ).model_dump(mode="json")
-            await kafka.publish(envelope, key=event.device_id)
+            await publish_or_reject(envelope, event.device_id)
             accepted += 1
             events_ingested_total.inc()
         except ValidationError as exc:
             events_failed_total.inc()
             errors.append({"index": index, "errors": exc.errors()})
     return BatchResponse(accepted=accepted, rejected=len(errors), errors=errors)
+
+
+async def publish_or_reject(envelope: dict, device_id: str) -> None:
+    try:
+        await kafka.publish(envelope, key=device_id)
+    except (KafkaError, TimeoutError, RuntimeError) as exc:
+        admission_rejected_total.labels(reason="kafka_unavailable").inc()
+        logger.warning("ingestion backpressure: Kafka unavailable", exc_info=exc)
+        raise HTTPException(
+            status_code=503,
+            detail="telemetry queue unavailable",
+            headers={"Retry-After": "1"},
+        ) from exc
 
 
 @app.get("/devices")

@@ -7,6 +7,11 @@ from starlette.responses import Response
 
 events_ingested_total = Counter("events_ingested_total", "Accepted telemetry events")
 events_failed_total = Counter("events_failed_total", "Rejected telemetry events")
+admission_rejected_total = Counter(
+    "admission_rejected_total",
+    "Requests rejected by admission control",
+    ["reason"],
+)
 api_request_latency_ms = Histogram(
     "api_request_latency_ms",
     "API request latency in milliseconds",

@@ -8,6 +8,7 @@ dependencies = []
 dev = [
   "aiokafka==0.12.0",
   "asyncpg==0.29.0",
+  "fastapi==0.115.6",
   "httpx>=0.27,<1",
   "prometheus-client==0.21.1",
   "pydantic==2.10.4",

@@ -89,9 +89,16 @@ services:
   api:
     build: ./api
     environment:
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       DATABASE_URL: postgresql://telemetry:telemetry@postgres:5432/telemetry
       REDIS_URL: redis://redis:6379/0
+      API_KEY_HASHES: ${API_KEY_HASHES:-a5af5a942743bf1ecbf0be471059478a7210059d98e81ad9ac93d18795d88d43,926f08afae1f31d412721b54c740579e48331b295778bd07a10b289474186411}
+      RATE_LIMIT_EVENTS: ${RATE_LIMIT_EVENTS:-1000}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-1048576}
+      MAX_BATCH_EVENTS: ${MAX_BATCH_EVENTS:-500}
+      KAFKA_PUBLISH_TIMEOUT_SECONDS: ${KAFKA_PUBLISH_TIMEOUT_SECONDS:-5}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -128,6 +135,7 @@ services:
     build: ./simulator
     environment:
       API_URL: http://api:8000
+      API_KEY: ${API_KEY:-development-key}
       DEVICE_COUNT: 500
       EVENTS_PER_SECOND: 100
       BATCH_SIZE: 50

@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import json
+import os
 import statistics
 import time
 from pathlib import Path
@@ -71,9 +72,13 @@ async def one_run(client, count: int, concurrency: int, run_number: int) -> dict
     }
 
 
-async def benchmark(url: str, count: int, levels: list[int], runs: int) -> dict:
+async def benchmark(url: str, api_key: str, count: int, levels: list[int], runs: int) -> dict:
     results = []
-    async with httpx.AsyncClient(base_url=url, timeout=30) as client:
+    async with httpx.AsyncClient(
+        base_url=url,
+        timeout=30,
+        headers={"X-API-Key": api_key},
+    ) as client:
         for concurrency in levels:
             for run_number in range(1, runs + 1):
                 results.append(await one_run(client, count, concurrency, run_number))
@@ -98,13 +103,14 @@ async def benchmark(url: str, count: int, levels: list[int], runs: int) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://localhost:8000")
+    parser.add_argument("--api-key", default=os.getenv("METRINGEST_API_KEY", "benchmark-key"))
     parser.add_argument("--count", type=int, default=1000)
     parser.add_argument("--concurrency-levels", default="1,10,25,50")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--output", type=Path, default=Path("benchmark-results/matrix.json"))
     args = parser.parse_args()
     levels = [int(value) for value in args.concurrency_levels.split(",")]
-    result = asyncio.run(benchmark(args.url, args.count, levels, args.runs))
+    result = asyncio.run(benchmark(args.url, args.api_key, args.count, levels, args.runs))
     rendered = json.dumps(result, indent=2)
     print(rendered)
     args.output.parent.mkdir(parents=True, exist_ok=True)
