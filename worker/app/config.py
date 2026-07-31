@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     batch_size: int = 100
     batch_wait_ms: int = 250
+    outbox_batch_size: int = 100
+    outbox_poll_ms: int = 250
     metrics_port: int = 9101
     service_name: str = "telemetry-worker"
 

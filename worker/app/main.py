@@ -23,6 +23,13 @@ events_processed_total = Counter("events_processed_total", "Processed telemetry 
 events_failed_total = Counter("events_failed_total", "Failed telemetry events")
 dead_letter_count = Counter("dead_letter_count", "Events routed to the dead-letter topic")
 duplicates_total = Counter("duplicate_events_total", "Duplicate event IDs ignored")
+outbox_published_total = Counter(
+    "outbox_published_total", "Events published from the transactional outbox"
+)
+outbox_publish_failures_total = Counter(
+    "outbox_publish_failures_total", "Failed transactional outbox publish attempts"
+)
+outbox_pending = Gauge("outbox_pending", "Unpublished transactional outbox records")
 queue_lag = Gauge("queue_lag", "Kafka consumer partition lag")
 processing_latency_ms = Histogram(
     "processing_latency_ms",
@@ -186,6 +193,17 @@ async def persist_event(pool, envelope: TelemetryEnvelope) -> tuple[dict, bool]:
                 event.temperature,
                 event.voltage,
             )
+            await connection.execute(
+                """
+                INSERT INTO event_outbox(event_id, topic, message_key, payload)
+                VALUES($1, $2, $3, $4::jsonb)
+                ON CONFLICT(event_id) DO NOTHING
+                """,
+                event.event_id,
+                settings.validated_topic,
+                event.device_id,
+                json.dumps(validated_payload(dict(row)), default=_json_default),
+            )
         else:
             duplicates_total.inc()
             row = await connection.fetchrow(
@@ -193,6 +211,18 @@ async def persist_event(pool, envelope: TelemetryEnvelope) -> tuple[dict, bool]:
                 event.event_id,
             )
     return dict(row), inserted
+
+
+def validated_payload(stored: dict) -> dict:
+    return {
+        "event_id": stored["event_id"],
+        "device_id": stored["device_id"],
+        "timestamp": stored["timestamp"],
+        "avg_temperature_5m": stored["avg_temperature_5m"],
+        "voltage_drop_detected": stored["voltage_drop_detected"],
+        "event_lag_ms": stored["event_lag_ms"],
+        "outlier_detected": stored["outlier_detected"],
+    }
 
 
 async def update_cache(redis: Redis, event: dict) -> None:
@@ -207,23 +237,10 @@ async def update_cache(redis: Redis, event: dict) -> None:
         await pipe.execute()
 
 
-async def process_event(pool, redis: Redis, producer, envelope: TelemetryEnvelope) -> bool:
+async def process_event(pool, redis: Redis, envelope: TelemetryEnvelope) -> bool:
     stored, inserted = await persist_event(pool, envelope)
     await update_cache(redis, stored)
     if inserted:
-        await producer.send_and_wait(
-            settings.validated_topic,
-            {
-                "event_id": stored["event_id"],
-                "device_id": stored["device_id"],
-                "timestamp": stored["timestamp"],
-                "avg_temperature_5m": stored["avg_temperature_5m"],
-                "voltage_drop_detected": stored["voltage_drop_detected"],
-                "event_lag_ms": stored["event_lag_ms"],
-                "outlier_detected": stored["outlier_detected"],
-            },
-            key=stored["device_id"].encode(),
-        )
         events_processed_total.inc()
     return inserted
 
@@ -245,7 +262,7 @@ async def handle_message(pool, redis: Redis, producer, message) -> str:
             PoisonMessage(reason=str(exc), payload=payload),
         )
         return "dead_letter"
-    await process_event(pool, redis, producer, envelope)
+    await process_event(pool, redis, envelope)
     return "processed"
 
 
@@ -260,6 +277,65 @@ def rewind_batch(consumer, batches) -> None:
     for partition, records in batches.items():
         if records:
             consumer.seek(partition, records[0].offset)
+
+
+def decode_outbox_payload(value) -> dict:
+    return json.loads(value) if isinstance(value, str) else value
+
+
+async def publish_outbox_batch(pool, producer, batch_size: int) -> int:
+    published = 0
+    async with pool.acquire() as connection, connection.transaction():
+        rows = await connection.fetch(
+            """
+            SELECT id, event_id, topic, message_key, payload
+            FROM event_outbox
+            WHERE published_at IS NULL
+            ORDER BY id
+            FOR UPDATE SKIP LOCKED
+            LIMIT $1
+            """,
+            batch_size,
+        )
+        for row in rows:
+            await producer.send_and_wait(
+                row["topic"],
+                decode_outbox_payload(row["payload"]),
+                key=row["message_key"].encode(),
+                headers=[("event_id", row["event_id"].encode())],
+            )
+            await connection.execute(
+                "UPDATE event_outbox SET published_at = now() WHERE id = $1",
+                row["id"],
+            )
+            published += 1
+    outbox_published_total.inc(published)
+    return published
+
+
+async def dispatch_outbox(pool, producer, stop_event: asyncio.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            published = await publish_outbox_batch(
+                pool,
+                producer,
+                settings.outbox_batch_size,
+            )
+            pending = await pool.fetchval(
+                "SELECT count(*) FROM event_outbox WHERE published_at IS NULL"
+            )
+            outbox_pending.set(pending)
+            if published == 0:
+                await asyncio.sleep(settings.outbox_poll_ms / 1000)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            outbox_publish_failures_total.inc()
+            logger.exception(
+                "outbox publish failed; pending records retained",
+                extra={"service": settings.service_name},
+            )
+            await asyncio.sleep(1)
 
 
 async def run() -> None:
@@ -280,6 +356,11 @@ async def run() -> None:
     pool = await connect_database()
     redis = await connect_redis()
     await connect_kafka(consumer, producer)
+    stop_event = asyncio.Event()
+    outbox_task = asyncio.create_task(
+        dispatch_outbox(pool, producer, stop_event),
+        name="outbox-dispatcher",
+    )
     logger.info("worker started", extra={"service": settings.service_name})
     try:
         while True:
@@ -310,6 +391,9 @@ async def run() -> None:
                     if highwater is not None:
                         queue_lag.set(max(highwater - position, 0))
     finally:
+        stop_event.set()
+        outbox_task.cancel()
+        await asyncio.gather(outbox_task, return_exceptions=True)
         await consumer.stop()
         await producer.stop()
         await redis.aclose()

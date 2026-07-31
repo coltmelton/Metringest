@@ -9,10 +9,12 @@ delivery between API acceptance and worker offset commit.
 For each valid Kafka record the worker performs these steps in order:
 
 1. Decode JSON and validate the telemetry envelope.
-2. Commit the event and device-status update in one PostgreSQL transaction.
+2. Commit the event, device-status update, and downstream outbox record in one PostgreSQL
+   transaction.
 3. Write the stored row to Redis's latest value and bounded recent list.
-4. Publish the derived event to `validated-telemetry` for newly inserted rows.
-5. Commit the consumed Kafka offsets after the complete fetched batch succeeds.
+4. Commit the consumed Kafka offsets after the complete fetched batch succeeds.
+5. Independently claim pending outbox records, publish them to `validated-telemetry`, and mark
+   them published after Kafka acknowledges the write.
 
 PostgreSQL and Redis do not share a transaction. A Redis failure can therefore occur after the
 PostgreSQL transaction commits. The worker deliberately leaves the Kafka offset uncommitted in
@@ -22,15 +24,37 @@ the durable row, and the idempotent Redis update repairs the cache before the of
 The Redis recent-list update removes the identical serialized row before pushing it. Replaying an
 event after a crash therefore does not create another copy in the bounded list.
 
-| Failure point | Durable row | Redis cache | Kafka offset | Recovery |
+| Failure point | Durable row/outbox | Redis cache | Raw offset | Recovery |
 | --- | --- | --- | --- | --- |
 | Before PostgreSQL commit | No | No | Uncommitted | Entire record retries |
 | After PostgreSQL, before Redis | Yes | Missing/stale | Uncommitted | Duplicate insert is ignored; cache is repaired |
-| After Redis, before offset commit | Yes | Current | Uncommitted | Idempotent replay, then commit |
-| After offset commit | Yes | Current | Committed | Processing complete |
+| After Redis, before raw offset commit | Yes | Current | Uncommitted | Idempotent replay, then commit |
+| Before outbox publication | Yes/pending | Current | May be committed | Dispatcher publishes pending row |
+| After Kafka ack, before outbox marker | Yes/pending | Current | Committed | Dispatcher republishes with the same event ID |
+| After outbox marker commit | Yes/published | Current | Committed | Downstream delivery complete |
 
 This is eventual consistency with PostgreSQL authority, not atomic dual storage. Redis can be
 temporarily stale while unavailable. Reads requiring durable truth must use PostgreSQL.
+
+## Transactional outbox
+
+The derived Kafka event is never created only in worker memory. Its payload, topic, message key,
+and event ID are inserted into `event_outbox` in the same transaction as `telemetry_events`.
+Consequently a process crash cannot commit the durable event while permanently losing its
+downstream publication.
+
+The Compose `migrate` service applies idempotent SQL migrations before the API or worker starts.
+This creates the outbox for existing PostgreSQL volumes as well as fresh installations; relying
+only on Docker's one-time initialization directory would leave upgraded volumes without it.
+
+Dispatchers claim rows in ID order using `FOR UPDATE SKIP LOCKED`. Multiple workers can therefore
+publish concurrently without selecting the same pending row. The database lock is held until
+Kafka acknowledges the message and `published_at` is updated.
+
+There is an unavoidable at-least-once window if the process dies after Kafka acknowledges a
+message but before PostgreSQL commits `published_at`. Replay uses the same event ID in the payload
+and Kafka header. Downstream consumers must deduplicate on that event ID. The outbox guarantees
+eventual publication, not exactly-once side effects in arbitrary consumers.
 
 ## Poison messages and DLQ
 
@@ -80,7 +104,8 @@ python scripts/benchmark_matrix.py --count 1000 --concurrency-levels 1,10,25,50 
 
 The integration suite exercises end-to-end delivery, poison isolation, worker restart recovery,
 PostgreSQL outage recovery, Redis outage/cache repair, topic partition count, and two-worker
-consumer-group membership.
+consumer-group membership. It also resets six durable outbox rows to pending, restarts two worker
+dispatchers, and verifies that every row is published once and marked complete.
 
 ## Benchmark interpretation
 
