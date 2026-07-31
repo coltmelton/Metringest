@@ -45,8 +45,11 @@ async def disconnect() -> None:
 async def publish(event: dict, key: str | None = None) -> None:
     if producer is None:
         raise RuntimeError("kafka producer is not initialized")
-    await producer.send_and_wait(
-        settings.raw_topic,
-        event,
-        key=key.encode("utf-8") if key else None,
+    await asyncio.wait_for(
+        producer.send_and_wait(
+            settings.raw_topic,
+            event,
+            key=key.encode("utf-8") if key else None,
+        ),
+        timeout=settings.kafka_publish_timeout_seconds,
     )

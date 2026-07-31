@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 from datetime import UTC, datetime
+from hashlib import sha256
 from uuid import uuid4
 
 import httpx
@@ -13,6 +14,8 @@ pytestmark = pytest.mark.integration
 
 API_URL = os.getenv("METRINGEST_TEST_URL", "http://localhost:8000")
 KAFKA_URL = os.getenv("METRINGEST_KAFKA_URL", "localhost:29092")
+API_KEY = os.getenv("METRINGEST_API_KEY", "development-key")
+AUTH_HEADERS = {"X-API-Key": API_KEY}
 
 
 def compose(*args: str) -> subprocess.CompletedProcess:
@@ -34,6 +37,23 @@ def payload(device_id: str, event_id: str | None = None) -> dict:
         "status": "OK",
         "region": "us-east",
     }
+
+
+async def send_raw_event(event: dict) -> None:
+    producer = AIOKafkaProducer(
+        bootstrap_servers=KAFKA_URL,
+        acks="all",
+        value_serializer=lambda value: json.dumps(value).encode(),
+    )
+    await producer.start()
+    try:
+        await producer.send_and_wait(
+            "raw-telemetry",
+            {"event": event, "received_at": datetime.now(UTC).isoformat()},
+            key=event["device_id"].encode(),
+        )
+    finally:
+        await producer.stop()
 
 
 async def wait_for(client, path, predicate, timeout=60):
@@ -77,11 +97,34 @@ async def wait_for_postgres(query: str, expected: str, timeout=60) -> None:
     pytest.fail(f"timed out waiting for PostgreSQL value {expected!r}; got {last!r}")
 
 
+async def wait_for_kafka(timeout=60) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        try:
+            compose(
+                "exec",
+                "-T",
+                "kafka",
+                "kafka-topics",
+                "--bootstrap-server",
+                "localhost:9092",
+                "--list",
+            )
+            return
+        except subprocess.CalledProcessError:
+            await asyncio.sleep(1)
+    pytest.fail("timed out waiting for Kafka readiness")
+
+
 @pytest.mark.asyncio
 async def test_event_traverses_api_kafka_worker_postgres_and_redis():
     device_id = f"integration-e2e-{uuid4().hex}"
     event = payload(device_id)
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
         response = await client.post("/telemetry", json=event)
         assert response.status_code == 202
         recent = await wait_for(
@@ -96,9 +139,69 @@ async def test_event_traverses_api_kafka_worker_postgres_and_redis():
 
 
 @pytest.mark.asyncio
+async def test_ingestion_requires_authentication_and_enforces_request_size():
+    event = payload(f"integration-admission-{uuid4().hex}")
+    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+        unauthorized = await client.post("/telemetry", json=event)
+        oversized = await client.post(
+            "/telemetry",
+            content=b"x" * 1_048_577,
+            headers=AUTH_HEADERS,
+        )
+
+    assert unauthorized.status_code == 401
+    assert oversized.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_distributed_event_quota_returns_429_with_retry_metadata():
+    fingerprint = sha256(API_KEY.encode()).hexdigest()[:16]
+    compose("exec", "-T", "redis", "redis-cli", "DEL", f"admission:{fingerprint}")
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=60,
+        headers=AUTH_HEADERS,
+    ) as client:
+        first = await client.post("/telemetry/batch", json=[{}] * 500)
+        second = await client.post("/telemetry/batch", json=[{}] * 500)
+        limited = await client.post("/telemetry/batch", json=[{}] * 100)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert limited.status_code == 429
+    assert int(limited.headers["retry-after"]) >= 1
+    assert limited.headers["x-ratelimit-remaining"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_kafka_outage_returns_retryable_backpressure_response():
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
+        compose("stop", "kafka")
+        try:
+            response = await client.post(
+                "/telemetry",
+                json=payload(f"integration-kafka-backpressure-{uuid4().hex}"),
+            )
+        finally:
+            compose("start", "kafka")
+            await wait_for_kafka()
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+
+
+@pytest.mark.asyncio
 async def test_poison_message_goes_to_dlq_without_blocking_partition():
     prefix = f"integration-poison-{uuid4().hex}"
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
         before = (await client.get("/pipeline/stats")).json()["dlq_count"]
         producer = AIOKafkaProducer(bootstrap_servers=KAFKA_URL, acks="all")
         await producer.start()
@@ -118,7 +221,11 @@ async def test_poison_message_goes_to_dlq_without_blocking_partition():
 @pytest.mark.asyncio
 async def test_worker_recovers_buffered_events():
     prefix = f"integration-worker-recovery-{uuid4().hex}"
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
         compose("stop", "worker")
         try:
             for index in range(3):
@@ -137,7 +244,11 @@ async def test_worker_recovers_buffered_events():
 @pytest.mark.asyncio
 async def test_postgres_outage_buffers_event_until_recovery():
     prefix = f"integration-postgres-outage-{uuid4().hex}"
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
         compose("stop", "postgres")
         try:
             response = await client.post("/telemetry", json=payload(prefix))
@@ -157,11 +268,14 @@ async def test_postgres_outage_buffers_event_until_recovery():
 async def test_redis_outage_replays_durable_row_and_repairs_cache():
     device_id = f"integration-redis-outage-{uuid4().hex}"
     event = payload(device_id)
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
         compose("stop", "redis")
         try:
-            response = await client.post("/telemetry", json=event)
-            assert response.status_code == 202
+            await send_raw_event(event)
             await asyncio.sleep(1)
         finally:
             compose("start", "redis")
@@ -181,7 +295,11 @@ async def test_pending_outbox_survives_restart_and_two_dispatchers_publish_each_
     event_ids = {event["event_id"] for event in events}
     quoted_ids = ", ".join(f"'{event_id}'" for event_id in event_ids)
 
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
         for event in events:
             response = await client.post("/telemetry", json=event)
             assert response.status_code == 202

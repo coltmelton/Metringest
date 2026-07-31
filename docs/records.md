@@ -117,3 +117,34 @@ The post-change benchmark used 300 events, two repeated runs, and concurrency le
 The matrix demonstrates that adding durable outbox insertion did not prevent complete
 processing under concurrent load. It remains single-host development evidence rather than a
 production capacity claim.
+
+## Admission-control verification — July 31, 2026
+
+The API now hashes and authenticates ingestion keys, atomically charges submitted event counts
+through a shared Redis token bucket, caps request and batch sizes, and returns retryable
+backpressure instead of a false acceptance when Kafka is unavailable. Known demonstration keys
+are rejected at startup outside development.
+
+Final local verification:
+
+```text
+Ruff: All checks passed
+API admission unit tests: 7 passed
+Worker reliability unit tests: 8 passed
+Integration tests: 10 passed, 8 unit tests deselected, 65.77 seconds
+Authenticated benchmark: 1,800 accepted, 1,800 persisted, 0 failures
+```
+
+The integration suite demonstrated an unauthenticated `401`, oversized-body `413`, distributed
+quota `429` with retry metadata, and Kafka-outage `503`. It then passed the existing poison/DLQ,
+PostgreSQL outage, Redis cache recovery, outbox restart, partition, and worker-scaling scenarios.
+
+| Concurrency | Runs | Median persisted events/s | Minimum | Maximum |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 2 | 268.0 | 264.4 | 271.6 |
+| 10 | 2 | 406.8 | 394.7 | 418.8 |
+| 25 | 2 | 385.1 | 380.5 | 389.6 |
+
+The isolated benchmark raised the benchmark client's quota to 10,000 events so it measured the
+authenticated pipeline rather than the intentional default admission ceiling. These are local
+development results, not production capacity claims.

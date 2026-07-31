@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     api_url: str = "http://api:8000"
+    api_key: str = "development-key"
     device_count: int = 100
     events_per_second: float = 50
     batch_size: int = 25
@@ -75,7 +76,10 @@ async def wait_for_api(client: httpx.AsyncClient) -> None:
 
 async def run() -> None:
     interval = settings.batch_size / settings.events_per_second
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(
+        timeout=10,
+        headers={"X-API-Key": settings.api_key},
+    ) as client:
         await wait_for_api(client)
         while True:
             batch = [next_event() for _ in range(settings.batch_size)]

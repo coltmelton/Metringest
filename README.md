@@ -38,6 +38,18 @@ Open:
 - `GET /regions/{region}/summary`
 - `GET /alerts`
 
+The two ingestion endpoints require the development header when using the default Compose setup:
+
+```sh
+curl -X POST http://localhost:8000/telemetry \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: development-key' \
+  --data @event.json
+```
+
+See [docs/admission-control.md](docs/admission-control.md) before using non-development keys or
+deploying the API outside a private local environment.
+
 ## Example Event
 
 ```json
