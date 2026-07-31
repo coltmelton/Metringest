@@ -73,6 +73,11 @@ Infrastructure exceptions are not poison messages. PostgreSQL, Redis, or Kafka f
 current batch, seek each fetched partition back to its first batch offset, and leave the committed
 offset unchanged for replay.
 
+Unsupported envelope versions are also permanent record-level failures. Legacy unversioned
+envelopes are upcast to v1, while unknown versions are isolated for deliberate operator repair.
+See [schema-governance.md](schema-governance.md) for the compatibility policy and audited replay
+procedure.
+
 ## Batches, partitions, and scaling
 
 The worker fetches up to `WORKER_BATCH_SIZE` records with a maximum wait of
@@ -97,12 +102,14 @@ beyond the raw topic's partition count produces idle consumers rather than more 
 python -m pip install -e ".[dev]"
 ruff check api worker tests scripts
 pytest -m "not integration" -v
-docker compose up --build --detach kafka-init postgres redis api worker
+docker compose up --build --detach kafka-init postgres redis schema-registry api worker
+python scripts/schema_contracts.py
 pytest -m integration -v -s
 python scripts/benchmark_matrix.py --count 1000 --concurrency-levels 1,10,25,50 --runs 3
 ```
 
-The integration suite exercises end-to-end delivery, poison isolation, worker restart recovery,
+The integration suite exercises end-to-end delivery, schema-registry outage behavior, mixed
+schema versions, audited DLQ replay, poison isolation, worker restart recovery,
 PostgreSQL outage recovery, Redis outage/cache repair, topic partition count, and two-worker
 consumer-group membership. It also resets six durable outbox rows to pending, restarts two worker
 dispatchers, and verifies that every row is published once and marked complete.

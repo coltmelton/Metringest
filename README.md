@@ -6,6 +6,7 @@ Production-style MVP for ingesting, validating, queueing, processing, storing, a
 
 - FastAPI ingestion and query API
 - Kafka topics: `raw-telemetry`, `validated-telemetry`, `dead-letter-telemetry`
+- Confluent Schema Registry with checked JSON Schema contracts and backward-transitive policy
 - Python stream worker with deduplication, transactional outbox delivery, dead-letter routing,
   and metrics
 - PostgreSQL time-series-style storage
@@ -90,4 +91,5 @@ PostgreSQL and Redis outages, worker restart recovery, three Kafka partitions, t
 and repeated benchmark matrices.
 
 See [docs/reliability.md](docs/reliability.md) for the consistency boundary and commands, and
-[docs/records.md](docs/records.md) for branch provenance and recorded results.
+[docs/schema-governance.md](docs/schema-governance.md) for schema evolution and controlled DLQ
+replay. [docs/records.md](docs/records.md) contains branch provenance and recorded results.

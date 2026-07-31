@@ -148,3 +148,43 @@ PostgreSQL outage, Redis cache recovery, outbox restart, partition, and worker-s
 The isolated benchmark raised the benchmark client's quota to 10,000 events so it measured the
 authenticated pipeline rather than the intentional default admission ceiling. These are local
 development results, not production capacity claims.
+
+## Schema-governance verification — July 31, 2026
+
+The raw envelope now carries a schema version and registry ID. Checked v0 and v1 JSON Schemas are
+registered under a backward-transitive policy at API startup. The worker upcasts legacy v0
+messages, isolates unknown versions in the existing DLQ, and provides an operator-controlled
+replay command whose database audit is written only after Kafka acknowledgement.
+
+Recorded local verification before the final combined rerun:
+
+```text
+Ruff: All checks passed
+API unit tests: 7 passed
+Worker/schema/replay unit tests: 14 passed, 12 integration tests deselected
+Registry contract check: v0 registered; v1 compatible; incompatible mutation rejected
+New integration cases: registry outage passed; mixed v0/v1/unknown and audited replay passed
+Integration suite: 11 passed; one pre-existing outbox observer race failed after Kafka restart
+Isolated outbox recovery rerun on the recovered broker: passed in 17.20 seconds
+```
+
+The failed combined run is retained here rather than hidden: the Kafka-outage test restarts the
+single local broker, and a later independent verification consumer temporarily lost group
+membership during broker recovery. No outbox rows were observed during its 90-second window. The
+same outbox test passed immediately when rerun against the recovered broker. This is evidence of
+a test-environment readiness race, not a claim that the first run passed; the final combined
+run then required five consecutive successful broker metadata checks after restart and passed:
+
+```text
+Final integration suite: 12 passed, 14 unit tests deselected, 86.13 seconds
+Benchmark: 1,800 accepted, 1,800 persisted, 0 failures
+```
+
+| Concurrency | Runs | Median persisted events/s | Minimum | Maximum |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 2 | 264.0 | 258.3 | 269.7 |
+| 10 | 2 | 391.2 | 374.7 | 407.7 |
+| 25 | 2 | 356.7 | 332.5 | 380.9 |
+
+The benchmark used 300 events per run at three concurrency levels. As with the previous records,
+these are measured single-host Compose results rather than production capacity claims.
