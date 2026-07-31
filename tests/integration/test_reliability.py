@@ -14,6 +14,7 @@ pytestmark = pytest.mark.integration
 
 API_URL = os.getenv("METRINGEST_TEST_URL", "http://localhost:8000")
 KAFKA_URL = os.getenv("METRINGEST_KAFKA_URL", "localhost:29092")
+SCHEMA_REGISTRY_URL = os.getenv("METRINGEST_SCHEMA_REGISTRY_URL", "http://localhost:8081")
 API_KEY = os.getenv("METRINGEST_API_KEY", "development-key")
 AUTH_HEADERS = {"X-API-Key": API_KEY}
 
@@ -39,7 +40,7 @@ def payload(device_id: str, event_id: str | None = None) -> dict:
     }
 
 
-async def send_raw_event(event: dict) -> None:
+async def send_raw_payloads(*values: dict) -> None:
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_URL,
         acks="all",
@@ -47,13 +48,20 @@ async def send_raw_event(event: dict) -> None:
     )
     await producer.start()
     try:
-        await producer.send_and_wait(
-            "raw-telemetry",
-            {"event": event, "received_at": datetime.now(UTC).isoformat()},
-            key=event["device_id"].encode(),
-        )
+        for value in values:
+            await producer.send_and_wait(
+                "raw-telemetry",
+                value,
+                key=value.get("event", {}).get("device_id", "unknown").encode(),
+            )
     finally:
         await producer.stop()
+
+
+async def send_raw_event(event: dict) -> None:
+    await send_raw_payloads(
+        {"event": event, "received_at": datetime.now(UTC).isoformat()}
+    )
 
 
 async def wait_for(client, path, predicate, timeout=60):
@@ -99,6 +107,7 @@ async def wait_for_postgres(query: str, expected: str, timeout=60) -> None:
 
 async def wait_for_kafka(timeout=60) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
+    consecutive_successes = 0
     while asyncio.get_running_loop().time() < deadline:
         try:
             compose(
@@ -110,10 +119,30 @@ async def wait_for_kafka(timeout=60) -> None:
                 "localhost:9092",
                 "--list",
             )
-            return
+            # A single-broker development cluster can briefly answer metadata requests before
+            # its coordinators are ready after restart. Require a stable window so later
+            # consumer-group recovery tests do not race that partial readiness state.
+            consecutive_successes += 1
+            if consecutive_successes == 5:
+                return
         except subprocess.CalledProcessError:
-            await asyncio.sleep(1)
+            consecutive_successes = 0
+        await asyncio.sleep(2)
     pytest.fail("timed out waiting for Kafka readiness")
+
+
+async def wait_for_schema_registry(timeout=60) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    async with httpx.AsyncClient(timeout=2) as client:
+        while asyncio.get_running_loop().time() < deadline:
+            try:
+                response = await client.get(f"{SCHEMA_REGISTRY_URL}/subjects")
+                if response.is_success:
+                    return
+            except httpx.HTTPError:
+                pass
+            await asyncio.sleep(1)
+    pytest.fail("timed out waiting for Schema Registry readiness")
 
 
 @pytest.mark.asyncio
@@ -192,6 +221,117 @@ async def test_kafka_outage_returns_retryable_backpressure_response():
 
     assert response.status_code == 503
     assert response.headers["retry-after"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_registry_outage_uses_cached_schema_and_degrades_health():
+    device_id = f"integration-registry-outage-{uuid4().hex}"
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
+        compose("stop", "schema-registry")
+        try:
+            response = await client.post("/telemetry", json=payload(device_id))
+            health = await client.get("/health")
+        finally:
+            compose("start", "schema-registry")
+            await wait_for_schema_registry()
+
+    assert response.status_code == 202
+    assert health.status_code == 200
+    assert health.json()["status"] == "degraded"
+    assert health.json()["dependencies"]["schema_registry"] is False
+
+
+@pytest.mark.asyncio
+async def test_mixed_schema_versions_unknown_version_isolation_and_audited_replay():
+    prefix = f"integration-schema-{uuid4().hex}"
+    legacy = payload(f"{prefix}-legacy")
+    current = payload(f"{prefix}-current")
+    unknown = payload(f"{prefix}-unknown")
+    following = payload(f"{prefix}-following")
+    now = datetime.now(UTC).isoformat()
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=10,
+        headers=AUTH_HEADERS,
+    ) as client:
+        before = (await client.get("/pipeline/stats")).json()["dlq_count"]
+        await send_raw_payloads(
+            {"event": legacy, "received_at": now},
+            {
+                "schema_version": 1,
+                "schema_id": 1,
+                "event": current,
+                "received_at": now,
+            },
+            {
+                "schema_version": 999,
+                "schema_id": 999,
+                "event": unknown,
+                "received_at": now,
+            },
+        )
+        response = await client.post("/telemetry", json=following)
+        assert response.status_code == 202
+        await wait_for(
+            client,
+            f"/pipeline/stats?device_prefix={prefix}",
+            lambda body: body["event_count"] == 3 and body["dlq_count"] >= before + 1,
+        )
+
+        error_id = int(
+            postgres_scalar(
+                """
+                SELECT id FROM pipeline_errors
+                WHERE reason LIKE 'unsupported schema_version:%'
+                ORDER BY id DESC LIMIT 1
+                """
+            )
+        )
+        corrected = {
+            "schema_version": 1,
+            "schema_id": 1,
+            "event": unknown,
+            "received_at": now,
+        }
+        dry_run = compose(
+            "exec",
+            "-T",
+            "worker",
+            "python",
+            "/tools/dlq_replay.py",
+            "replay",
+            "--error-id",
+            str(error_id),
+            "--payload-json",
+            json.dumps(corrected),
+        )
+        assert json.loads(dry_run.stdout)["executed"] is False
+        executed = compose(
+            "exec",
+            "-T",
+            "worker",
+            "python",
+            "/tools/dlq_replay.py",
+            "replay",
+            "--error-id",
+            str(error_id),
+            "--payload-json",
+            json.dumps(corrected),
+            "--execute",
+        )
+        assert json.loads(executed.stdout)["executed"] is True
+        await wait_for(
+            client,
+            f"/pipeline/stats?device_prefix={prefix}",
+            lambda body: body["event_count"] == 4,
+        )
+        assert postgres_scalar(
+            f"SELECT replay_count FROM pipeline_errors WHERE id = {error_id}"
+        ) == "1"
 
 
 @pytest.mark.asyncio

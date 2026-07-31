@@ -43,6 +43,8 @@ jobs:
           done
           docker compose logs
           exit 1
+      - name: Verify schema compatibility policy
+        run: python scripts/schema_contracts.py
       - run: pytest -m integration -v -s
       - name: Benchmark matrix smoke test
         run: |
