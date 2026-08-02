@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     raw_topic: str = "raw-telemetry"
     database_url: str = "postgresql://telemetry:telemetry@postgres:5432/telemetry"
     redis_url: str = "redis://redis:6379/0"
+    schema_registry_url: str = "http://schema-registry:8081"
+    schema_subject: str = "raw-telemetry-value"
+    schema_directory: str = "/schemas"
     api_key_hashes: str = f"{DEVELOPMENT_API_KEY_HASH},{BENCHMARK_API_KEY_HASH}"
     rate_limit_events: int = 1000
     rate_limit_window_seconds: int = 60

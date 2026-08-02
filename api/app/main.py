@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from app import cache, db, kafka
+from app import cache, db, kafka, schema_registry
 from app.admission import (
     ClientIdentity,
     RequestSizeLimitMiddleware,
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI):
     await db.connect()
     await cache.connect()
+    await schema_registry.connect()
     await kafka.connect()
     logger.info("api started", extra={"service": settings.service_name})
     try:
@@ -62,13 +63,19 @@ async def health() -> dict:
     postgres_ok = bool(await db.get_pool().fetchval("SELECT true"))
     redis_ok = bool(await cache.get_client().ping())
     kafka_ok = kafka.producer is not None and bool(kafka.producer.client.cluster.brokers())
+    schema_registry_ok = await schema_registry.healthy()
     return {
-        "status": "ready" if postgres_ok and redis_ok and kafka_ok else "degraded",
+        "status": (
+            "ready"
+            if postgres_ok and redis_ok and kafka_ok and schema_registry_ok
+            else "degraded"
+        ),
         "service": settings.service_name,
         "dependencies": {
             "postgres": postgres_ok,
             "redis": redis_ok,
             "kafka": kafka_ok,
+            "schema_registry": schema_registry_ok,
         },
     }
 
@@ -86,7 +93,9 @@ async def ingest(
 ) -> dict:
     await charge_rate_limit(identity, 1, response)
     envelope = TelemetryEnvelope(
-        event=event, received_at=datetime.now(UTC)
+        schema_id=schema_registry.current_schema_id(),
+        event=event,
+        received_at=datetime.now(UTC),
     ).model_dump(mode="json")
     await publish_or_reject(envelope, event.device_id)
     events_ingested_total.inc()
@@ -112,7 +121,9 @@ async def ingest_batch(
         try:
             event = TelemetryIn.model_validate(payload)
             envelope = TelemetryEnvelope(
-                event=event, received_at=datetime.now(UTC)
+                schema_id=schema_registry.current_schema_id(),
+                event=event,
+                received_at=datetime.now(UTC),
             ).model_dump(mode="json")
             await publish_or_reject(envelope, event.device_id)
             accepted += 1

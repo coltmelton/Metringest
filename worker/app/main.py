@@ -67,6 +67,18 @@ def decode_message(value: bytes) -> dict:
     return payload
 
 
+def normalize_envelope(payload: dict) -> dict:
+    version = payload.get("schema_version", 0)
+    if version == 0:
+        return {**payload, "schema_version": 1, "schema_id": 0}
+    if version == 1:
+        return payload
+    raise PoisonMessage(
+        reason=f"unsupported schema_version: {version!r}",
+        payload=payload,
+    )
+
+
 async def write_dead_letter(producer, pool, message, poison: PoisonMessage) -> None:
     source = {
         "topic": message.topic,
@@ -248,7 +260,7 @@ async def process_event(pool, redis: Redis, envelope: TelemetryEnvelope) -> bool
 async def handle_message(pool, redis: Redis, producer, message) -> str:
     try:
         payload = decode_message(message.value)
-        envelope = TelemetryEnvelope.model_validate(payload)
+        envelope = TelemetryEnvelope.model_validate(normalize_envelope(payload))
     except PoisonMessage as poison:
         events_failed_total.inc()
         await write_dead_letter(producer, pool, message, poison)

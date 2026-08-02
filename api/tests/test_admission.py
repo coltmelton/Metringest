@@ -9,6 +9,11 @@ from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def schema_id(monkeypatch):
+    monkeypatch.setattr("app.schema_registry.schema_id", 1)
+
+
 def event() -> dict:
     return {
         "event_id": "admission-event",

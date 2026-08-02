@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RawTelemetryEnvelopeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event", "received_at"],
+  "properties": {
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_id", "device_id", "timestamp", "temperature", "voltage", "status", "region"],
+      "properties": {
+        "event_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "device_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "temperature": {"type": "number", "minimum": -100, "maximum": 250},
+        "voltage": {"type": "number", "minimum": 0, "maximum": 1000},
+        "status": {"type": "string", "enum": ["OK", "WARNING", "FAILED"]},
+        "region": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "received_at": {"type": "string", "format": "date-time"},
+    "schema_version": {"type": "integer", "const": 1, "default": 1},
+    "schema_id": {"type": "integer", "minimum": 1}
+  }
+}

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -30,6 +30,8 @@ class TelemetryIn(BaseModel):
 
 
 class TelemetryEnvelope(BaseModel):
+    schema_version: Literal[1] = 1
+    schema_id: int = Field(ge=1)
     event: TelemetryIn
     received_at: datetime
 

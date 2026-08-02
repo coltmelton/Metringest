@@ -196,6 +196,23 @@ def outbox_row(row_id=1):
     }
 
 
+def test_legacy_unversioned_envelope_is_upcast_to_v1():
+    legacy = {"event": {"device_id": "legacy"}, "received_at": "now"}
+
+    normalized = worker.normalize_envelope(legacy)
+
+    assert normalized["schema_version"] == 1
+    assert normalized["schema_id"] == 0
+    assert "schema_version" not in legacy
+
+
+def test_unknown_schema_version_is_a_poison_message():
+    with pytest.raises(worker.PoisonMessage) as error:
+        worker.normalize_envelope({"schema_version": 99, "event": {}})
+
+    assert error.value.reason == "unsupported schema_version: 99"
+
+
 @pytest.mark.asyncio
 async def test_outbox_marks_record_only_after_kafka_acknowledges():
     pool = FakeOutboxPool([outbox_row()])
