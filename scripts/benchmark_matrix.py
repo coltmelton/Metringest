@@ -72,7 +72,14 @@ async def one_run(client, count: int, concurrency: int, run_number: int) -> dict
     }
 
 
-async def benchmark(url: str, api_key: str, count: int, levels: list[int], runs: int) -> dict:
+async def benchmark(
+    url: str,
+    api_key: str,
+    count: int,
+    levels: list[int],
+    runs: int,
+    max_pipeline_seconds: float | None = None,
+) -> dict:
     results = []
     async with httpx.AsyncClient(
         base_url=url,
@@ -95,9 +102,18 @@ async def benchmark(url: str, api_key: str, count: int, levels: list[int], runs:
                 "max_pipeline_eps": max(rates),
                 "total_failures": sum(item["failures"] for item in group),
                 "all_persisted": all(item["persisted"] == count for item in group),
+                "within_slo": max_pipeline_seconds is None
+                or all(item["pipeline_seconds"] <= max_pipeline_seconds for item in group),
             }
         )
-    return {"configuration": {"requests_per_run": count}, "summaries": summaries, "runs": results}
+    return {
+        "configuration": {
+            "requests_per_run": count,
+            "max_pipeline_seconds": max_pipeline_seconds,
+        },
+        "summaries": summaries,
+        "runs": results,
+    }
 
 
 def main():
@@ -107,15 +123,32 @@ def main():
     parser.add_argument("--count", type=int, default=1000)
     parser.add_argument("--concurrency-levels", default="1,10,25,50")
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument(
+        "--max-pipeline-seconds",
+        type=float,
+        help="Fail if an accepted run is not fully persisted within this SLO",
+    )
     parser.add_argument("--output", type=Path, default=Path("benchmark-results/matrix.json"))
     args = parser.parse_args()
     levels = [int(value) for value in args.concurrency_levels.split(",")]
-    result = asyncio.run(benchmark(args.url, args.api_key, args.count, levels, args.runs))
+    result = asyncio.run(
+        benchmark(
+            args.url,
+            args.api_key,
+            args.count,
+            levels,
+            args.runs,
+            args.max_pipeline_seconds,
+        )
+    )
     rendered = json.dumps(result, indent=2)
     print(rendered)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(f"{rendered}\n")
-    if any(item["total_failures"] or not item["all_persisted"] for item in result["summaries"]):
+    if any(
+        item["total_failures"] or not item["all_persisted"] or not item["within_slo"]
+        for item in result["summaries"]
+    ):
         raise SystemExit(1)
 
 

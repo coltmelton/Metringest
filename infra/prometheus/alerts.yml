@@ -1,0 +1,56 @@
+groups:
+  - name: telemetry-pipeline-slos
+    rules:
+      - alert: TelemetryWorkerUnavailable
+        expr: max(worker_ready) < 1 or absent(worker_ready)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: No telemetry worker is ready
+          runbook: docs/operational-slos.md#worker-unavailable
+
+      - alert: TelemetryConsumerLagHigh
+        expr: sum(queue_lag) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Raw telemetry consumer lag exceeds 1,000 messages
+          runbook: docs/operational-slos.md#consumer-lag
+
+      - alert: TelemetryPersistenceLatencySLOBreach
+        expr: histogram_quantile(0.99, sum(rate(event_persistence_latency_seconds_bucket[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: p99 accepted-to-persisted latency exceeds five seconds
+          runbook: docs/operational-slos.md#persistence-latency
+
+      - alert: TelemetryDLQRateHigh
+        expr: sum(rate(dead_letter_count_total[10m])) / clamp_min(sum(rate(events_processed_total[10m])) + sum(rate(dead_letter_count_total[10m])), 0.001) > 0.001
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 0.1% of consumed telemetry is entering the DLQ
+          runbook: docs/operational-slos.md#dlq-rate
+
+      - alert: TelemetryOutboxStalled
+        expr: max(outbox_oldest_pending_seconds) > 30
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The oldest pending outbox row is more than 30 seconds old
+          runbook: docs/operational-slos.md#outbox-stall
+
+      - alert: TelemetryAPINotReady
+        expr: min(dependency_ready) < 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: At least one API dependency is not ready
+          runbook: docs/operational-slos.md#api-dependency
