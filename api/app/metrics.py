@@ -1,6 +1,6 @@
 from time import perf_counter
 
-from prometheus_client import Counter, Histogram, generate_latest
+from prometheus_client import Counter, Gauge, Histogram, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -12,6 +12,7 @@ admission_rejected_total = Counter(
     "Requests rejected by admission control",
     ["reason"],
 )
+dependency_ready = Gauge("dependency_ready", "API dependency readiness", ["dependency"])
 api_request_latency_ms = Histogram(
     "api_request_latency_ms",
     "API request latency in milliseconds",

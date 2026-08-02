@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from app import admission, kafka
+from app import admission, kafka, main
 from app.admission import ClientIdentity
 from app.config import DEVELOPMENT_API_KEY_HASH, Settings
 from app.main import app
@@ -131,3 +131,58 @@ def test_production_cannot_start_with_known_development_key():
             api_key_hashes=DEVELOPMENT_API_KEY_HASH,
             _env_file=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_liveness_is_process_only_and_readiness_reports_dependencies(monkeypatch):
+    class Pool:
+        async def fetchval(self, _query):
+            return True
+
+    class Redis:
+        async def ping(self):
+            return True
+
+    class Cluster:
+        def brokers(self):
+            return {"broker"}
+
+    class Producer:
+        client = type("Client", (), {"cluster": Cluster()})()
+
+    async def registry_healthy():
+        return True
+
+    monkeypatch.setattr(main.db, "get_pool", lambda: Pool())
+    monkeypatch.setattr(main.cache, "get_client", lambda: Redis())
+    monkeypatch.setattr(main.schema_registry, "healthy", registry_healthy)
+    monkeypatch.setattr(main.kafka, "producer", Producer())
+
+    assert (await main.live())["status"] == "alive"
+    result = await main.readiness()
+    assert result["status"] == "ready"
+    assert all(result["dependencies"].values())
+
+
+@pytest.mark.asyncio
+async def test_readiness_degrades_instead_of_raising_on_dependency_error(monkeypatch):
+    class BrokenPool:
+        async def fetchval(self, _query):
+            raise ConnectionError("postgres unavailable")
+
+    class Redis:
+        async def ping(self):
+            return True
+
+    async def registry_healthy():
+        return True
+
+    monkeypatch.setattr(main.db, "get_pool", lambda: BrokenPool())
+    monkeypatch.setattr(main.cache, "get_client", lambda: Redis())
+    monkeypatch.setattr(main.schema_registry, "healthy", registry_healthy)
+    monkeypatch.setattr(main.kafka, "producer", None)
+
+    result = await main.readiness()
+    assert result["status"] == "degraded"
+    assert result["dependencies"]["postgres"] is False
+    assert result["dependencies"]["kafka"] is False

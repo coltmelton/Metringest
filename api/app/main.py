@@ -4,10 +4,12 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Annotated
 
+import asyncpg
 from aiokafka.errors import KafkaError
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
+from redis.exceptions import RedisError
 
 from app import cache, db, kafka, schema_registry
 from app.admission import (
@@ -21,6 +23,7 @@ from app.logging_config import configure_logging
 from app.metrics import (
     MetricsMiddleware,
     admission_rejected_total,
+    dependency_ready,
     events_failed_total,
     events_ingested_total,
     metrics_response,
@@ -58,26 +61,51 @@ app.add_middleware(
 app.add_middleware(MetricsMiddleware)
 
 
-@app.get("/health")
-async def health() -> dict:
-    postgres_ok = bool(await db.get_pool().fetchval("SELECT true"))
-    redis_ok = bool(await cache.get_client().ping())
-    kafka_ok = kafka.producer is not None and bool(kafka.producer.client.cluster.brokers())
-    schema_registry_ok = await schema_registry.healthy()
+@app.get("/live")
+async def live() -> dict:
+    return {"status": "alive", "service": settings.service_name}
+
+
+async def readiness() -> dict:
+    checks = {
+        "postgres": lambda: db.get_pool().fetchval("SELECT true"),
+        "redis": lambda: cache.get_client().ping(),
+        "schema_registry": schema_registry.healthy,
+    }
+    dependencies = {}
+    for name, check in checks.items():
+        try:
+            dependencies[name] = bool(await check())
+        except (asyncpg.PostgresError, RedisError, RuntimeError, OSError):
+            dependencies[name] = False
+        dependency_ready.labels(dependency=name).set(int(dependencies[name]))
+    try:
+        dependencies["kafka"] = kafka.producer is not None and bool(
+            kafka.producer.client.cluster.brokers()
+        )
+    except (AttributeError, RuntimeError):
+        dependencies["kafka"] = False
+    dependency_ready.labels(dependency="kafka").set(int(dependencies["kafka"]))
     return {
         "status": (
-            "ready"
-            if postgres_ok and redis_ok and kafka_ok and schema_registry_ok
-            else "degraded"
+            "ready" if all(dependencies.values()) else "degraded"
         ),
         "service": settings.service_name,
-        "dependencies": {
-            "postgres": postgres_ok,
-            "redis": redis_ok,
-            "kafka": kafka_ok,
-            "schema_registry": schema_registry_ok,
-        },
+        "dependencies": dependencies,
     }
+
+
+@app.get("/health")
+async def health() -> dict:
+    return await readiness()
+
+
+@app.get("/ready")
+async def ready(response: Response) -> dict:
+    result = await readiness()
+    if result["status"] != "ready":
+        response.status_code = 503
+    return result
 
 
 @app.get("/metrics")

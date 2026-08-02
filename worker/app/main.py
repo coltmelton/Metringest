@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import signal
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -30,11 +31,23 @@ outbox_publish_failures_total = Counter(
     "outbox_publish_failures_total", "Failed transactional outbox publish attempts"
 )
 outbox_pending = Gauge("outbox_pending", "Unpublished transactional outbox records")
-queue_lag = Gauge("queue_lag", "Kafka consumer partition lag")
+outbox_oldest_pending_seconds = Gauge(
+    "outbox_oldest_pending_seconds", "Age of the oldest unpublished outbox record"
+)
+queue_lag = Gauge("queue_lag", "Kafka consumer partition lag", ["topic", "partition"])
+worker_ready = Gauge("worker_ready", "Whether the worker is connected and consuming")
+graceful_shutdowns_total = Counter(
+    "graceful_shutdowns_total", "Worker shutdowns completed after the active batch"
+)
 processing_latency_ms = Histogram(
     "processing_latency_ms",
     "Worker processing latency in milliseconds",
     buckets=(5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
+)
+event_persistence_latency_seconds = Histogram(
+    "event_persistence_latency_seconds",
+    "Seconds from API receipt to durable processing and cache update",
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60),
 )
 
 
@@ -254,6 +267,9 @@ async def process_event(pool, redis: Redis, envelope: TelemetryEnvelope) -> bool
     await update_cache(redis, stored)
     if inserted:
         events_processed_total.inc()
+        event_persistence_latency_seconds.observe(
+            max((datetime.now(UTC) - envelope.received_at).total_seconds(), 0)
+        )
     return inserted
 
 
@@ -336,7 +352,14 @@ async def dispatch_outbox(pool, producer, stop_event: asyncio.Event) -> None:
             pending = await pool.fetchval(
                 "SELECT count(*) FROM event_outbox WHERE published_at IS NULL"
             )
+            oldest_seconds = await pool.fetchval(
+                """
+                SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)
+                FROM event_outbox WHERE published_at IS NULL
+                """
+            )
             outbox_pending.set(pending)
+            outbox_oldest_pending_seconds.set(float(oldest_seconds))
             if published == 0:
                 await asyncio.sleep(settings.outbox_poll_ms / 1000)
         except asyncio.CancelledError:
@@ -369,13 +392,15 @@ async def run() -> None:
     redis = await connect_redis()
     await connect_kafka(consumer, producer)
     stop_event = asyncio.Event()
+    install_signal_handlers(asyncio.get_running_loop(), stop_event)
     outbox_task = asyncio.create_task(
         dispatch_outbox(pool, producer, stop_event),
         name="outbox-dispatcher",
     )
+    worker_ready.set(1)
     logger.info("worker started", extra={"service": settings.service_name})
     try:
-        while True:
+        while not stop_event.is_set():
             batches = await consumer.getmany(
                 timeout_ms=settings.batch_wait_ms,
                 max_records=settings.batch_size,
@@ -401,8 +426,12 @@ async def run() -> None:
                     position = await consumer.position(partition)
                     highwater = consumer.highwater(partition)
                     if highwater is not None:
-                        queue_lag.set(max(highwater - position, 0))
+                        queue_lag.labels(
+                            topic=partition.topic,
+                            partition=str(partition.partition),
+                        ).set(max(highwater - position, 0))
     finally:
+        worker_ready.set(0)
         stop_event.set()
         outbox_task.cancel()
         await asyncio.gather(outbox_task, return_exceptions=True)
@@ -410,6 +439,20 @@ async def run() -> None:
         await producer.stop()
         await redis.aclose()
         await pool.close()
+        graceful_shutdowns_total.inc()
+        logger.info("worker stopped gracefully", extra={"service": settings.service_name})
+
+
+def install_signal_handlers(loop, stop_event: asyncio.Event) -> None:
+    def request_stop() -> None:
+        logger.info("shutdown requested; finishing active batch")
+        stop_event.set()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(signum, request_stop)
+        except NotImplementedError:
+            signal.signal(signum, lambda *_args: loop.call_soon_threadsafe(request_stop))
 
 
 async def connect_database() -> asyncpg.Pool:

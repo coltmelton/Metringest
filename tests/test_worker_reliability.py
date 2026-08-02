@@ -1,4 +1,5 @@
 import json
+import signal
 from types import SimpleNamespace
 
 import pytest
@@ -262,3 +263,22 @@ async def test_outbox_crash_after_publish_rolls_back_marker_for_idempotent_repla
     assert sent == ["acknowledged"]
     assert pool.connection.updates == []
     assert pool.connection.transaction_state.exception is RuntimeError
+
+
+def test_shutdown_signals_request_a_graceful_stop():
+    callbacks = {}
+
+    class Loop:
+        def add_signal_handler(self, signum, callback):
+            callbacks[signum] = callback
+
+    stop_event = type(
+        "StopEvent",
+        (),
+        {"set": lambda self: setattr(self, "requested", True), "requested": False},
+    )()
+
+    worker.install_signal_handlers(Loop(), stop_event)
+    callbacks[signal.SIGTERM]()
+
+    assert stop_event.requested is True
