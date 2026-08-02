@@ -188,3 +188,36 @@ Benchmark: 1,800 accepted, 1,800 persisted, 0 failures
 
 The benchmark used 300 events per run at three concurrency levels. As with the previous records,
 these are measured single-host Compose results rather than production capacity claims.
+
+## Operational-SLO verification — August 2, 2026
+
+The pipeline now exposes separate liveness and readiness probes, partition-labelled consumer lag,
+accepted-to-persisted latency, oldest pending outbox age, worker readiness, and graceful-shutdown
+counts. Six Prometheus rules enforce the documented latency, lag, DLQ, outbox, worker, and API
+dependency thresholds. The Grafana dashboard uses the same metrics and labels.
+
+Local verification:
+
+```text
+Ruff: All checks passed
+API unit tests: 9 passed
+Worker/reliability unit tests: 15 passed, 13 integration tests deselected
+Promtool: configuration valid, 1 rule file and 6 rules loaded
+Integration tests: 13 passed, 15 unit tests deselected, 85.66 seconds
+Graceful-shutdown drill: 50 accepted, 50 persisted after SIGTERM/restart
+Prometheus runtime: API and worker targets both up; all 6 rules loaded
+Redis readiness drill: /ready returned 503, alert entered pending, recovery in 27 seconds
+SLO probe: 400 accepted, 400 persisted, 0 failures, all runs below 5 seconds
+```
+
+| Concurrency | Runs | Median persisted events/s | Minimum | Maximum | Slowest run |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 2 | 304.1 | 297.4 | 310.9 | 0.336 s |
+| 10 | 2 | 395.4 | 386.0 | 404.9 | 0.259 s |
+
+The readiness drill deliberately stopped Redis. `/live` continued to represent the API process,
+while `/ready` identified Redis as false and returned 503. Prometheus observed
+`TelemetryAPINotReady` in its pending state before Redis was restored. The 27-second measurement
+includes container shutdown, the 10-second scrape interval, alert evaluation, restart, and the
+successful readiness probe. The alert's two-minute `for` duration intentionally prevented paging
+during this short verified recovery.

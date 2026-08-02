@@ -93,3 +93,5 @@ and repeated benchmark matrices.
 See [docs/reliability.md](docs/reliability.md) for the consistency boundary and commands, and
 [docs/schema-governance.md](docs/schema-governance.md) for schema evolution and controlled DLQ
 replay. [docs/records.md](docs/records.md) contains branch provenance and recorded results.
+Operational objectives, Prometheus alerts, and response runbooks are in
+[docs/operational-slos.md](docs/operational-slos.md).
