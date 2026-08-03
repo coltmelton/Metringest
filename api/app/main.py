@@ -265,6 +265,74 @@ async def pipeline_stats(device_prefix: str | None = None) -> dict:
     }
 
 
+@app.get("/dashboard/overview")
+async def dashboard_overview() -> dict:
+    pool = db.get_pool()
+    status_rows = await pool.fetch(
+        """
+        SELECT status, count(*) AS count
+        FROM device_status GROUP BY status ORDER BY status
+        """
+    )
+    region_rows = await pool.fetch(
+        """
+        SELECT region,
+          count(*) AS devices,
+          count(*) FILTER (WHERE status != 'OK') AS unhealthy,
+          avg(temperature) AS avg_temperature,
+          avg(voltage) AS avg_voltage
+        FROM device_status GROUP BY region ORDER BY region
+        """
+    )
+    trend_rows = await pool.fetch(
+        """
+        WITH recent_events AS (
+          SELECT processed_at, status, event_lag_ms, temperature, voltage
+          FROM telemetry_events
+          ORDER BY processed_at DESC
+          LIMIT 75000
+        ), recent_buckets AS (
+          SELECT date_trunc('minute', events.processed_at) AS bucket,
+            count(*) AS events,
+            count(*) FILTER (WHERE status != 'OK') AS failures,
+            avg(event_lag_ms) AS avg_lag_ms,
+            avg(temperature) AS avg_temperature,
+            avg(voltage) AS avg_voltage
+          FROM recent_events AS events
+          GROUP BY 1 ORDER BY 1 DESC LIMIT 12
+        )
+        SELECT * FROM recent_buckets ORDER BY bucket
+        """
+    )
+    latest_rows = await pool.fetch(
+        """
+        SELECT device_id, region, last_seen, status, temperature, voltage
+        FROM device_status ORDER BY last_seen DESC LIMIT 12
+        """
+    )
+    reliability = await pool.fetchrow(
+        """
+        SELECT
+          (SELECT count(*) FROM telemetry_events) AS event_count,
+          (SELECT count(*) FROM pipeline_errors) AS dlq_count,
+          (SELECT COALESCE(sum(replay_count), 0) FROM pipeline_errors) AS replay_count,
+          (SELECT count(*) FROM event_outbox WHERE published_at IS NULL) AS outbox_pending,
+          (SELECT COALESCE(EXTRACT(EPOCH FROM now() - MIN(created_at)), 0)
+             FROM event_outbox WHERE published_at IS NULL) AS oldest_outbox_seconds,
+          (SELECT count(*) FROM device_status WHERE voltage < 10) AS low_voltage_devices,
+          (SELECT count(*) FROM device_status
+             WHERE temperature < -40 OR temperature > 140) AS temperature_outliers
+        """
+    )
+    return {
+        "device_status": {row["status"]: row["count"] for row in status_rows},
+        "regions": [dict(row) for row in region_rows],
+        "trend": [dict(row) for row in trend_rows],
+        "latest_devices": [dict(row) for row in latest_rows],
+        "reliability": dict(reliability),
+    }
+
+
 @app.get("/regions/{region}/summary")
 async def region_summary(region: str) -> dict:
     row = await db.get_pool().fetchrow(

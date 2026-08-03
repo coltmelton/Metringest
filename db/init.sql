@@ -20,6 +20,9 @@ CREATE INDEX IF NOT EXISTS idx_telemetry_device_time
 CREATE INDEX IF NOT EXISTS idx_telemetry_region_time
   ON telemetry_events (region, timestamp DESC);
 
+CREATE INDEX IF NOT EXISTS idx_telemetry_processed_time
+  ON telemetry_events (processed_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_telemetry_alerts
   ON telemetry_events (timestamp DESC)
   WHERE status != 'OK' OR outlier_detected OR voltage_drop_detected;
