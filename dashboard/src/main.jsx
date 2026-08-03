@@ -31,8 +31,9 @@ async function fetchJson(path) {
   return response.json();
 }
 
-function Metric({ label, value, detail }) {
-  return <article className="metric"><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
+function Metric({ label, value, detail, href }) {
+  const content = <><span>{label}</span><strong>{value}</strong><small>{detail}{href ? ' · INVESTIGATE ↗' : ''}</small></>;
+  return <article className="metric">{href ? <a href={href} target="_blank" rel="noreferrer">{content}</a> : content}</article>;
 }
 
 function EmptyState({ children }) { return <div className="empty-state">{children}</div>; }
@@ -130,8 +131,8 @@ function App() {
           <Metric label="EVENTS STORED" value={formatNumber(reliability.event_count)} detail={`${formatNumber(latestWindow.events)} latest minute`} />
           <Metric label="MEAN LAG" value={`${formatNumber(latestWindow.avg_lag_ms)} ms`} detail="latest processing window" />
           <Metric label="UNHEALTHY" value={formatNumber(unhealthy)} detail={`${formatNumber(reliability.low_voltage_devices)} low voltage`} />
-          <Metric label="DLQ" value={formatNumber(reliability.dlq_count)} detail={`${formatNumber(reliability.replay_count)} replay attempts`} />
-          <Metric label="OUTBOX PENDING" value={formatNumber(reliability.outbox_pending)} detail={`oldest ${formatNumber(reliability.oldest_outbox_seconds)}s`} />
+          <Metric label="DLQ" value={formatNumber(reliability.dlq_count)} detail={`${formatNumber(reliability.replay_count)} replay attempts`} href="http://localhost:9090/graph?g0.expr=dead_letter_count_total" />
+          <Metric label="OUTBOX PENDING" value={formatNumber(reliability.outbox_pending)} detail={`oldest ${formatNumber(reliability.oldest_outbox_seconds)}s`} href="http://localhost:9090/graph?g0.expr=outbox_oldest_pending_seconds" />
         </section>
 
         <section className="overview-grid">
@@ -142,7 +143,7 @@ function App() {
           <article className="panel fleet-panel">
             <div className="panel-heading"><div><p className="section-label">02 / FLEET</p><h2>Device state</h2></div><strong className="fraction">{formatNumber(deviceCount)}</strong></div>
             <div className="status-list">{statusEntries.map(([status, count]) => <div key={status}><span>{status}</span><div><i className={status.toLowerCase()} style={{ width: `${deviceCount ? (Number(count) / deviceCount) * 100 : 0}%` }} /></div><b>{formatNumber(count)}</b></div>)}</div>
-            <div className="health-summary">DEPENDENCIES {dependencies.filter(([, ok]) => ok).length}/{dependencies.length || '—'}</div>
+            <a className="health-summary investigation-link" href="http://localhost:9090/graph?g0.expr=dependency_ready" target="_blank" rel="noreferrer">DEPENDENCIES {dependencies.filter(([, ok]) => ok).length}/{dependencies.length || '—'} <span>INVESTIGATE ↗</span></a>
             <div className="dependency-list">{dependencies.map(([name, ok]) => <div key={name}><span className={ok ? 'up' : 'down'} />{name.replace('_', ' ')}<b>{ok ? 'UP' : 'DOWN'}</b></div>)}</div>
           </article>
         </section>
