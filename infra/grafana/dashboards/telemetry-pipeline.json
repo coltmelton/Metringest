@@ -1,5 +1,7 @@
 {
   "title": "Telemetry Pipeline",
+  "uid": "telemetry-pipeline",
+  "tags": ["metringest", "operations", "slo"],
   "schemaVersion": 39,
   "version": 2,
   "refresh": "10s",
