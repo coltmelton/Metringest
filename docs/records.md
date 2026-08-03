@@ -308,3 +308,18 @@ API tests: 10 passed
 
 The temporary database container held only synthetic verification data and was removed after the
 checks. No persistent Metringest event, outbox row, or Docker volume was altered by this drill.
+
+## Unified historical-query verification — August 3, 2026
+
+The historical endpoint was exercised against the persistent development database after applying
+only the idempotent rollup schema migration; raw-event retention was not executed. A 34-day hourly
+request returned 2,359,371 events as 186 bounded points in 1.227 seconds and correctly reported
+`storage=raw`. The same SQL contract unions retained hourly rows and still-raw rows, then combines
+averages by event count, so reads remain continuous while retention batches are running and when
+late raw events share an existing rollup hour.
+
+Browser verification loaded a 30-day sensor history on desktop and mobile. During an 11-second
+observation, each page issued one historical request while live overview polling issued two
+requests. Both returned 200. The 1-day, 7-day, and 30-day controls rendered without horizontal
+overflow, both chart canvases retained their dimensions after wheel input, and no browser request
+failed. API verification completed with 13 passing tests.

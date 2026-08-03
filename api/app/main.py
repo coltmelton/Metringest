@@ -1,8 +1,8 @@
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
-from typing import Annotated
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Literal
 
 import asyncpg
 from aiokafka.errors import KafkaError
@@ -330,6 +330,128 @@ async def dashboard_overview() -> dict:
         "trend": [dict(row) for row in trend_rows],
         "latest_devices": [dict(row) for row in latest_rows],
         "reliability": dict(reliability),
+    }
+
+
+@app.get("/telemetry/history")
+async def telemetry_history(
+    start: datetime | None = None,
+    end: datetime | None = None,
+    resolution: Literal["auto", "raw", "hour"] = "auto",
+    device_id: str | None = None,
+    region: str | None = None,
+    status: str | None = Query(default=None, pattern="^(OK|WARNING|FAILED)$"),
+    limit: int = Query(default=2000, ge=1, le=5000),
+) -> dict:
+    requested_end = end or datetime.now(UTC)
+    requested_start = start or requested_end - timedelta(hours=24)
+    if requested_start.tzinfo is None:
+        requested_start = requested_start.replace(tzinfo=UTC)
+    if requested_end.tzinfo is None:
+        requested_end = requested_end.replace(tzinfo=UTC)
+    requested_start = requested_start.astimezone(UTC)
+    requested_end = requested_end.astimezone(UTC)
+    if requested_start >= requested_end:
+        raise HTTPException(status_code=422, detail="start must be before end")
+
+    span = requested_end - requested_start
+    selected_resolution = "raw" if resolution == "auto" and span <= timedelta(hours=24) else resolution
+    if selected_resolution == "auto":
+        selected_resolution = "hour"
+    if selected_resolution == "raw" and span > timedelta(hours=24):
+        raise HTTPException(status_code=422, detail="raw history is limited to 24 hours")
+    if selected_resolution == "hour" and span > timedelta(days=366):
+        raise HTTPException(status_code=422, detail="hourly history is limited to 366 days")
+
+    args: list = [requested_start, requested_end]
+    filters = []
+    for column, value in (("device_id", device_id), ("region", region), ("status", status)):
+        if value is not None:
+            args.append(value)
+            filters.append(f"{column} = ${len(args)}")
+    filter_sql = f" AND {' AND '.join(filters)}" if filters else ""
+    pool = db.get_pool()
+
+    if selected_resolution == "raw":
+        args.append(limit)
+        rows = await pool.fetch(
+            f"""
+            SELECT event_id, device_id, timestamp, temperature, voltage, status, region,
+              event_lag_ms, outlier_detected, voltage_drop_detected
+            FROM telemetry_events
+            WHERE timestamp >= $1 AND timestamp < $2{filter_sql}
+            ORDER BY timestamp
+            LIMIT ${len(args)}
+            """,
+            *args,
+        )
+        return {
+            "resolution": "raw",
+            "storage": "raw",
+            "requested_start": requested_start,
+            "requested_end": requested_end,
+            "effective_start": requested_start,
+            "effective_end": requested_end,
+            "truncated": len(rows) == limit,
+            "points": [dict(row) for row in rows],
+        }
+
+    effective_start = requested_start.replace(minute=0, second=0, microsecond=0)
+    effective_end = requested_end.replace(minute=0, second=0, microsecond=0)
+    if effective_end < requested_end:
+        effective_end += timedelta(hours=1)
+    args[0], args[1] = effective_start, effective_end
+    args.append(limit)
+    rows = await pool.fetch(
+        f"""
+        WITH rollup_points AS (
+          SELECT bucket_start AS bucket, event_count,
+            CASE WHEN status != 'OK' THEN event_count ELSE 0 END AS non_ok_events,
+            avg_temperature * event_count AS temperature_sum,
+            min_temperature, max_temperature,
+            avg_voltage * event_count AS voltage_sum,
+            min_voltage, max_voltage,
+            avg_event_lag_ms * event_count AS lag_sum,
+            event_count AS rollup_events, 0::bigint AS raw_events
+          FROM telemetry_hourly_rollups
+          WHERE bucket_start >= $1 AND bucket_start < $2{filter_sql}
+        ), raw_points AS (
+          SELECT date_trunc('hour', timestamp) AS bucket, count(*) AS event_count,
+            count(*) FILTER (WHERE status != 'OK') AS non_ok_events,
+            sum(temperature) AS temperature_sum, min(temperature) AS min_temperature,
+            max(temperature) AS max_temperature, sum(voltage) AS voltage_sum,
+            min(voltage) AS min_voltage, max(voltage) AS max_voltage,
+            sum(event_lag_ms) AS lag_sum, 0::bigint AS rollup_events,
+            count(*) AS raw_events
+          FROM telemetry_events
+          WHERE timestamp >= $1 AND timestamp < $2{filter_sql}
+          GROUP BY 1
+        ), points AS (
+          SELECT * FROM rollup_points UNION ALL SELECT * FROM raw_points
+        )
+        SELECT bucket, sum(event_count) AS events, sum(non_ok_events) AS non_ok_events,
+          sum(temperature_sum) / sum(event_count) AS avg_temperature,
+          min(min_temperature) AS min_temperature, max(max_temperature) AS max_temperature,
+          sum(voltage_sum) / sum(event_count) AS avg_voltage,
+          min(min_voltage) AS min_voltage, max(max_voltage) AS max_voltage,
+          sum(lag_sum) / sum(event_count) AS avg_lag_ms,
+          sum(rollup_events) AS rollup_events, sum(raw_events) AS raw_events
+        FROM points GROUP BY bucket ORDER BY bucket LIMIT ${len(args)}
+        """,
+        *args,
+    )
+    rollup_events = sum(row["rollup_events"] for row in rows)
+    raw_events = sum(row["raw_events"] for row in rows)
+    storage = "raw+rollup" if rollup_events and raw_events else "rollup" if rollup_events else "raw"
+    return {
+        "resolution": "hour",
+        "storage": storage,
+        "requested_start": requested_start,
+        "requested_end": requested_end,
+        "effective_start": effective_start,
+        "effective_end": effective_end,
+        "truncated": len(rows) == limit,
+        "points": [dict(row) for row in rows],
     }
 
 

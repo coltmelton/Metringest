@@ -54,6 +54,11 @@ h2 { margin: 0; font-size: 14px; line-height: 1.2; }
 .chart-key span, .chart-key i { width: 18px; height: 0; border-top: 2px solid #111; }
 .chart-key i { margin-left: 8px; border-top-color: #16803c; border-top-style: dashed; }
 .chart-key i.red { border-top-color: #a51e1e; }
+.history-controls { display: flex; border: 1px solid #aaa; }
+.history-controls button { height: 25px; padding: 0 9px; border: 0; border-left: 1px solid #aaa; color: #555; background: #fff; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; }
+.history-controls button:first-child { border-left: 0; }
+.history-controls button:hover { background: #eee; }
+.history-controls button.active { color: #fff; background: #171717; }
 
 /* One hard-sized parent prevents Chart.js resize feedback and runaway page growth. */
 .chart-viewport { position: relative; width: 100%; height: clamp(230px, 29vh, 290px); min-height: 0; overflow: hidden; overscroll-behavior: contain; touch-action: pan-y; }

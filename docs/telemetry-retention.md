@@ -35,3 +35,15 @@ than a historical store.
 The current implementation retains hourly rollups indefinitely. Production deployments should
 back them up and define a separate, substantially longer rollup-retention policy based on legal,
 analytics, and storage requirements.
+
+## Historical reads
+
+`GET /telemetry/history` provides one bounded read contract across both storage tiers. Raw
+resolution is limited to 24 hours and 5,000 points. Hour resolution is limited to 366 days and
+combines retained rollups with raw events that have not yet been compacted. It reports `storage`
+as `raw`, `rollup`, or `raw+rollup`, plus requested and effective time bounds. Hour bounds are
+expanded to complete UTC hours because partial detail no longer exists after raw retention.
+
+Supported filters are `device_id`, `region`, and `status`. `resolution=auto` selects raw data for
+ranges up to 24 hours and hourly data for longer ranges. The operations dashboard explicitly asks
+for hourly history and offers bounded 1-day, 7-day, and 30-day signal windows.

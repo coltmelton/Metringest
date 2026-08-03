@@ -38,6 +38,7 @@ Open:
 - `GET /devices/{device_id}/latest`
 - `GET /regions/{region}/summary`
 - `GET /alerts`
+- `GET /telemetry/history`
 
 The two ingestion endpoints require the development header when using the default Compose setup:
 
