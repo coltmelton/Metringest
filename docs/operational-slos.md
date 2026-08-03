@@ -71,4 +71,6 @@ python scripts/benchmark_matrix.py --count 100 --concurrency-levels 1,10 \
 ```
 
 The CI probe fails if any accepted event is missing or any complete run exceeds five seconds. It
-is a deterministic smoke objective, not a substitute for a long-running production SLO window.
+first persists a small unmeasured warm-up batch so container startup and consumer-group assignment
+are not attributed to run 1. The five-second limit still applies to every recorded run. It is a
+deterministic smoke objective, not a substitute for a long-running production SLO window.
