@@ -79,13 +79,25 @@ async def benchmark(
     levels: list[int],
     runs: int,
     max_pipeline_seconds: float | None = None,
+    warmup_count: int = 10,
 ) -> dict:
     results = []
+    warmup = None
     async with httpx.AsyncClient(
         base_url=url,
         timeout=30,
         headers={"X-API-Key": api_key},
     ) as client:
+        if warmup_count:
+            warmup_result = await one_run(
+                client, warmup_count, max(levels), run_number=0
+            )
+            warmup = {
+                "requests": warmup_result["requests"],
+                "accepted": warmup_result["accepted"],
+                "persisted": warmup_result["persisted"],
+                "failures": warmup_result["failures"],
+            }
         for concurrency in levels:
             for run_number in range(1, runs + 1):
                 results.append(await one_run(client, count, concurrency, run_number))
@@ -109,8 +121,10 @@ async def benchmark(
     return {
         "configuration": {
             "requests_per_run": count,
+            "warmup_requests": warmup_count,
             "max_pipeline_seconds": max_pipeline_seconds,
         },
+        "warmup": warmup,
         "summaries": summaries,
         "runs": results,
     }
@@ -123,6 +137,12 @@ def main():
     parser.add_argument("--count", type=int, default=1000)
     parser.add_argument("--concurrency-levels", default="1,10,25,50")
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument(
+        "--warmup-count",
+        type=int,
+        default=10,
+        help="Unmeasured events persisted before the benchmark matrix",
+    )
     parser.add_argument(
         "--max-pipeline-seconds",
         type=float,
@@ -139,13 +159,18 @@ def main():
             levels,
             args.runs,
             args.max_pipeline_seconds,
+            args.warmup_count,
         )
     )
     rendered = json.dumps(result, indent=2)
     print(rendered)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(f"{rendered}\n")
-    if any(
+    warmup_failed = result["warmup"] and (
+        result["warmup"]["failures"]
+        or result["warmup"]["persisted"] != result["warmup"]["requests"]
+    )
+    if warmup_failed or any(
         item["total_failures"] or not item["all_persisted"] or not item["within_slo"]
         for item in result["summaries"]
     ):

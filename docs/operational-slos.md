@@ -18,6 +18,12 @@ serve requests. `/ready` returns 503 unless PostgreSQL, Redis, Kafka, and Schema
 usable. The backward-compatible `/health` endpoint returns the same details with a 200 response so
 operators can inspect a degraded instance.
 
+Each alert carries an `owner`, `runbook`, `dashboard`, and metric-specific `investigate`
+annotation. In the local stack, use the Grafana dashboard at `http://localhost:3001/d/telemetry-pipeline/telemetry-pipeline`,
+Prometheus alerts at `http://localhost:9090/alerts`, and the plain operations dashboard at
+`http://localhost:5173`. The DLQ, outbox, and dependency displays link directly to their source
+metrics so the operator can move from symptom to evidence without reconstructing a query.
+
 ## Worker unavailable
 
 Check `docker compose ps worker` and worker logs. Start or replace workers, then confirm
@@ -65,4 +71,6 @@ python scripts/benchmark_matrix.py --count 100 --concurrency-levels 1,10 \
 ```
 
 The CI probe fails if any accepted event is missing or any complete run exceeds five seconds. It
-is a deterministic smoke objective, not a substitute for a long-running production SLO window.
+first persists a small unmeasured warm-up batch so container startup and consumer-group assignment
+are not attributed to run 1. The five-second limit still applies to every recorded run. It is a
+deterministic smoke objective, not a substitute for a long-running production SLO window.
