@@ -382,6 +382,32 @@ async def test_worker_recovers_buffered_events():
 
 
 @pytest.mark.asyncio
+async def test_graceful_worker_shutdown_preserves_every_accepted_event():
+    prefix = f"integration-graceful-{uuid4().hex}"
+    events = [payload(f"{prefix}-{index}") for index in range(50)]
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=60,
+        headers=AUTH_HEADERS,
+    ) as client:
+        responses = await asyncio.gather(
+            *(client.post("/telemetry", json=event) for event in events)
+        )
+        assert all(response.status_code == 202 for response in responses)
+        compose("stop", "worker")
+        logs = compose("logs", "--tail=30", "worker").stdout
+        assert "worker stopped gracefully" in logs
+        compose("start", "worker")
+        stats = await wait_for(
+            client,
+            f"/pipeline/stats?device_prefix={prefix}",
+            lambda body: body["event_count"] == len(events),
+            timeout=90,
+        )
+        assert stats["event_count"] == len(events)
+
+
+@pytest.mark.asyncio
 async def test_postgres_outage_buffers_event_until_recovery():
     prefix = f"integration-postgres-outage-{uuid4().hex}"
     async with httpx.AsyncClient(

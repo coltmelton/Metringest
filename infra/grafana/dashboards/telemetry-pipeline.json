@@ -1,7 +1,7 @@
 {
   "title": "Telemetry Pipeline",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "panels": [
     {
@@ -47,6 +47,50 @@
         {
           "expr": "histogram_quantile(0.95, sum(rate(api_request_latency_ms_bucket[5m])) by (le))",
           "legendFormat": "p95 ms"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Accepted to Persisted p99",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(event_persistence_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99 seconds"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer Lag by Partition",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "queue_lag", "legendFormat": "partition {{partition}}" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Oldest Pending Outbox Row",
+      "gridPos": { "x": 0, "y": 20, "w": 6, "h": 4 },
+      "targets": [
+        { "expr": "max(outbox_oldest_pending_seconds)", "legendFormat": "seconds" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Worker Ready",
+      "gridPos": { "x": 6, "y": 20, "w": 6, "h": 4 },
+      "targets": [{ "expr": "sum(worker_ready)", "legendFormat": "workers" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "DLQ Percentage",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 4 },
+      "targets": [
+        {
+          "expr": "100 * sum(rate(dead_letter_count_total[10m])) / clamp_min(sum(rate(events_processed_total[10m])) + sum(rate(dead_letter_count_total[10m])), 0.001)",
+          "legendFormat": "DLQ %"
         }
       ]
     }
