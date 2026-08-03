@@ -95,3 +95,5 @@ See [docs/reliability.md](docs/reliability.md) for the consistency boundary and 
 replay. [docs/records.md](docs/records.md) contains branch provenance and recorded results.
 Operational objectives, Prometheus alerts, and response runbooks are in
 [docs/operational-slos.md](docs/operational-slos.md).
+Bounded raw-event compaction and its transactional safety boundary are documented in
+[docs/telemetry-retention.md](docs/telemetry-retention.md).
