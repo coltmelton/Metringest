@@ -279,3 +279,32 @@ missing persistence still fails the command, but warm-up time is not reported as
 latency. The five-second limit remains unchanged for every recorded run. The exact local CI matrix
 then accepted and persisted all 410 events (10 warm-up and 400 measured); measured runs completed
 in 0.810, 0.565, 0.515, and 0.510 seconds, and both concurrency summaries satisfied the objective.
+
+## Transactional telemetry retention verification — August 3, 2026
+
+Retention was verified against an isolated PostgreSQL 16 container populated with four synthetic
+events: two old events with published outbox rows, one old event with a pending outbox row, and one
+recent delivered event. The initial dry run reported two eligible events and one protected pending
+event without changing either table. Executing one batch selected, rolled up, and deleted exactly
+the two delivered old events. The pending old event and recent event remained raw.
+
+A second execution introduced one late event in an hour already represented by a rollup. The
+conflict update added its count and used count-weighted averages instead of replacing the previous
+aggregate. Final evidence from the disposable database was:
+
+```text
+First dry run: eligible_events=2, protected_pending_events=1
+First execution: selected_events=2, rollup_rows=2, deleted_events=2
+Late execution: selected_events=1, rollup_rows=1, deleted_events=1
+Final raw rows: 2 (pending old event and recent event)
+Final rollup event count: 3
+Final weighted average temperature: 73.3 F
+Pending outbox rows: 1
+Pending raw event present: 1
+Retention unit tests: 2 passed
+Repository non-integration tests: 19 passed, 13 deselected
+API tests: 10 passed
+```
+
+The temporary database container held only synthetic verification data and was removed after the
+checks. No persistent Metringest event, outbox row, or Docker volume was altered by this drill.
