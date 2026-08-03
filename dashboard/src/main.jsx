@@ -11,6 +11,7 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, 
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const EMPTY_OVERVIEW = { device_status: {}, regions: [], trend: [], latest_devices: [], reliability: {} };
+const HISTORY_RANGES = [1, 7, 30];
 
 function formatNumber(value, digits = 0) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '0';
@@ -51,6 +52,8 @@ function App() {
   const [overview, setOverview] = useState(EMPTY_OVERVIEW);
   const [alerts, setAlerts] = useState([]);
   const [health, setHealth] = useState({ status: 'loading', dependencies: {} });
+  const [history, setHistory] = useState({ resolution: 'hour', storage: 'raw', points: [] });
+  const [historyDays, setHistoryDays] = useState(30);
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -76,6 +79,21 @@ function App() {
     return () => { active = false; clearInterval(id); };
   }, [refreshToken]);
 
+  useEffect(() => {
+    let active = true;
+    async function loadHistory() {
+      const historyEnd = new Date();
+      const historyStart = new Date(historyEnd.getTime() - historyDays * 86400000);
+      const path = `/telemetry/history?start=${encodeURIComponent(historyStart.toISOString())}&end=${encodeURIComponent(historyEnd.toISOString())}&resolution=hour`;
+      try {
+        const rows = await fetchJson(path);
+        if (active) { setHistory(rows); setError(''); }
+      } catch (err) { if (active) setError(err.message); }
+    }
+    loadHistory();
+    return () => { active = false; };
+  }, [historyDays, refreshToken]);
+
   const statusEntries = Object.entries(overview.device_status || {});
   const deviceCount = statusEntries.reduce((sum, [, count]) => sum + Number(count), 0);
   const unhealthy = statusEntries.reduce((sum, [status, count]) => sum + (status === 'OK' ? 0 : Number(count)), 0);
@@ -92,12 +110,12 @@ function App() {
   }), [overview.trend]);
 
   const signalData = useMemo(() => ({
-    labels: overview.trend.map((row) => formatTime(row.bucket, true)),
+    labels: history.points.map((row) => formatTime(row.bucket, true)),
     datasets: [
-      { label: 'TEMPERATURE °F', data: overview.trend.map((row) => row.avg_temperature), borderColor: '#111', pointRadius: 2, borderWidth: 1.5, yAxisID: 'temperature', tension: 0.15 },
-      { label: 'VOLTAGE V', data: overview.trend.map((row) => row.avg_voltage), borderColor: '#16803c', pointRadius: 2, borderWidth: 1.5, borderDash: [4, 3], yAxisID: 'voltage', tension: 0.15 },
+      { label: 'TEMPERATURE °F', data: history.points.map((row) => row.avg_temperature), borderColor: '#111', pointRadius: 1, borderWidth: 1.5, yAxisID: 'temperature', tension: 0.15 },
+      { label: 'VOLTAGE V', data: history.points.map((row) => row.avg_voltage), borderColor: '#16803c', pointRadius: 1, borderWidth: 1.5, borderDash: [4, 3], yAxisID: 'voltage', tension: 0.15 },
     ],
-  }), [overview.trend]);
+  }), [history]);
 
   const volumeOptions = useMemo(() => ({ ...baseChartOptions, scales: {
     x: { grid: { display: false }, ticks: { color: '#666', maxRotation: 0, maxTicksLimit: 6 }, border: { color: '#bbb' } },
@@ -150,8 +168,8 @@ function App() {
 
         <section className="signal-grid" id="signals">
           <article className="panel signal-panel">
-            <div className="panel-heading"><div><p className="section-label">03 / SENSOR SIGNALS</p><h2>Average temperature and voltage</h2></div><div className="chart-key"><span />TEMP <i />VOLTAGE</div></div>
-            <div className="chart-viewport compact">{overview.trend.length ? <Line data={signalData} options={signalOptions} /> : <EmptyState>NO SIGNAL DATA</EmptyState>}</div>
+            <div className="panel-heading"><div><p className="section-label">03 / SENSOR HISTORY · {history.resolution.toUpperCase()} · {history.storage.toUpperCase()}</p><h2>Average temperature and voltage</h2></div><div className="history-controls">{HISTORY_RANGES.map((days) => <button className={historyDays === days ? 'active' : ''} key={days} onClick={() => setHistoryDays(days)}>{days}D</button>)}</div></div>
+            <div className="chart-viewport compact">{history.points.length ? <Line data={signalData} options={signalOptions} /> : <EmptyState>NO SIGNAL DATA IN {historyDays}D WINDOW</EmptyState>}</div>
           </article>
           <article className="panel region-panel">
             <div className="panel-heading"><div><p className="section-label">04 / DISTRIBUTION</p><h2>Regional health</h2></div></div>
